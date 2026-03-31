@@ -27,7 +27,6 @@ public class GiteaApiClient {
 
     public void postReviewComment(String owner, String repo, Long pullNumber, String body) {
         log.info("Posting review comment on PR #{} in {}/{}", pullNumber, owner, repo);
-        record CommentRequest(String body) {}
         giteaRestClient.post()
                 .uri("/api/v1/repos/{owner}/{repo}/pulls/{index}/reviews", owner, repo, pullNumber)
                 .body(new ReviewRequest(body, "COMMENT"))
