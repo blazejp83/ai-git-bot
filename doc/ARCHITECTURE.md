@@ -11,9 +11,10 @@ graph LR
     Anthropic["Anthropic API"]
     DB["PostgreSQL Database"]
 
-    Gitea -- "Webhook (PR/Comment event)" --> Bot
+    Gitea -- "Webhook (PR/Comment/Review event)" --> Bot
     Bot -- "Fetch PR diff" --> Gitea
     Bot -- "Post review/comment" --> Gitea
+    Bot -- "Fetch reviews & comments" --> Gitea
     Bot -- "Add reaction" --> Gitea
     Bot -- "Review diff / Chat" --> Anthropic
     Anthropic -- "Review text" --> Bot
@@ -21,6 +22,8 @@ graph LR
 ```
 
 The bot sits between a Gitea instance and the Anthropic Claude API. When a pull request is opened or updated, Gitea sends a webhook to the bot. The bot fetches the diff, sends it to Claude for review, and posts the review back as a PR comment. Conversation sessions are persisted in a database so the bot maintains context across PR updates and comment interactions.
+
+The bot also responds to inline review comments and submitted reviews containing bot mentions by fetching the relevant review data from the Gitea API and posting context-aware replies.
 
 ## Component Diagram
 
@@ -48,6 +51,7 @@ graph TD
 
     Controller --> ReviewService
     Controller --> BotConfig
+    ReviewService --> BotConfig
     ReviewService --> PromptService
     ReviewService --> GiteaClient
     ReviewService --> AnthropicClient
@@ -68,26 +72,24 @@ graph TD
 
 - **Package:** `org.remus.giteabot.gitea`
 - **Endpoint:** `POST /api/webhook?prompt={name}`
-- Receives Gitea webhook payloads for pull request and issue comment events
-- Filters PR events for `opened`, `synchronized`, and `closed` actions
-- Detects bot mentions (configurable alias) in PR comments and delegates to command handling
+- Receives Gitea webhook payloads for pull request, issue comment, and review comment events
+- Routes events based on payload structure:
+  - **Inline review comments** (`comment.path` set): delegates to `handleInlineComment()`
+  - **Issue/PR comments** (`comment` + `issue` set): delegates to `handleBotCommand()`
+  - **Review submitted** (`action: "reviewed"` + `review` set): delegates to `handleReviewSubmitted()`
+  - **PR lifecycle** (`opened`, `synchronized`, `closed`): delegates to `reviewPullRequest()` or `handlePrClosed()`
+- Filters comments for bot mention (configurable alias) before processing
 - Delegates to `CodeReviewService` asynchronously
 
 ### CodeReviewService
 
 - **Package:** `org.remus.giteabot.review`
-- Orchestrates the full review flow:
-  1. Resolves prompt configuration (system prompt, model override, token override)
-  2. Creates or reuses a session for the PR
-  3. Fetches the PR diff from Gitea
-  4. Sends the diff (or conversation) to Claude for review
-  5. Stores messages in the session for future context
-  6. Posts the review comment back to the PR
-- Handles bot commands from PR comments:
-  1. Adds an 👀 reaction to acknowledge the comment
-  2. Sends the comment in the context of the existing conversation
-  3. Posts the response as a new PR comment
-- Handles PR close/merge by deleting the session
+- Orchestrates all review and interaction flows:
+  - **`reviewPullRequest()`**: Initial review or follow-up review on PR update. Fetches diff, sends to Claude, posts review comment.
+  - **`handleBotCommand()`**: Responds to bot mentions in regular PR comments. Acknowledges with 👀 reaction, sends conversation to Claude, posts response.
+  - **`handleInlineComment()`**: Responds to bot mentions in inline code review comments. Includes file path and diff hunk context. Replies inline at the same file/line, falls back to regular comment.
+  - **`handleReviewSubmitted()`**: Handles review submission events where the individual comments are not in the webhook payload. Fetches reviews and their comments from the Gitea API, filters for bot mentions, and processes each matching comment.
+- Manages session lifecycle (create, reuse, enrich with PR context)
 - Runs asynchronously via `@Async`
 
 ### SessionService
@@ -129,15 +131,26 @@ graph TD
 
 - **Package:** `org.remus.giteabot.gitea`
 - Fetches PR diffs from the Gitea API
-- Posts review comments and regular comments back to PRs
+- Posts review comments, regular comments, and inline review comments back to PRs
+- Fetches reviews and review comments for a PR (used when processing submitted reviews)
 - Adds emoji reactions to comments (e.g., 👀 for acknowledgment)
 - Supports per-request token overrides with cached `RestClient` instances
+
+### WebhookPayload Model
+
+- **Package:** `org.remus.giteabot.gitea.model`
+- Deserializes Gitea webhook payloads with support for:
+  - PR events (`pullRequest`, `action`)
+  - Issue comments (`comment`, `issue`)
+  - Inline review comments (`comment.path`, `comment.diffHunk`, `comment.line`, `comment.pullRequestReviewId`)
+  - Review submitted events (`review.id`, `review.type`, `review.content`)
+  - Sender information (`sender`)
 
 ### BotConfigProperties
 
 - **Package:** `org.remus.giteabot.config`
 - Configures the bot mention alias (default: `@claude_bot`)
-- The alias is used to detect bot commands in PR comments
+- Used by both the webhook controller (for filtering) and the code review service (for review comment filtering)
 
 ### AppConfig
 
@@ -244,6 +257,57 @@ sequenceDiagram
     GiteaAPI->>Gitea: POST comment
 ```
 
+### Inline Review Comment Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Gitea
+    participant Controller as WebhookController
+    participant Review as CodeReviewService
+    participant Session as SessionService
+    participant GiteaAPI as GiteaApiClient
+    participant Claude as AnthropicClient
+
+    User->>Gitea: Inline comment on code: "@claude_bot explain this"
+    Gitea->>Controller: POST /api/webhook (comment with path)
+    Controller->>Review: handleInlineComment(payload)
+    Review->>GiteaAPI: addReaction(commentId, "eyes")
+    Review->>Session: getOrCreateSession(owner, repo, pr)
+    Review->>Claude: chat(history, fileContext + diffHunk + question)
+    Claude-->>Review: response
+    Review->>GiteaAPI: postInlineReviewComment(file, line, response)
+    Note right of GiteaAPI: Falls back to postComment() on error
+```
+
+### Review Submitted Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Gitea
+    participant Controller as WebhookController
+    participant Review as CodeReviewService
+    participant GiteaAPI as GiteaApiClient
+    participant Claude as AnthropicClient
+
+    User->>Gitea: Submit review with inline comments
+    Gitea->>Controller: POST /api/webhook (action: "reviewed")
+    Controller->>Review: handleReviewSubmitted(payload)
+    Review->>GiteaAPI: getReviews(owner, repo, pr)
+    GiteaAPI-->>Review: list of reviews
+    Review->>Review: find latest review (highest ID)
+    Review->>GiteaAPI: getReviewComments(owner, repo, pr, reviewId)
+    GiteaAPI-->>Review: list of comments
+    Review->>Review: filter for bot mentions
+    loop For each bot-mentioning comment
+        Review->>GiteaAPI: addReaction(commentId, "eyes")
+        Review->>Claude: chat(history, fileContext + question)
+        Claude-->>Review: response
+        Review->>GiteaAPI: postInlineReviewComment(file, line, response)
+    end
+```
+
 ### PR Close/Merge Flow
 
 ```mermaid
@@ -295,6 +359,25 @@ flowchart TD
     I -- Yes --> J[Return file content as system prompt]
 ```
 
+## Webhook Routing Flow
+
+```mermaid
+flowchart TD
+    A["Webhook received"] --> B{comment with path?}
+    B -- Yes --> C["handleInlineReviewComment()<br/>Bot mention in code-level comment"]
+    B -- No --> D{comment + issue?}
+    D -- Yes --> E["handleCommentEvent()<br/>Bot mention in PR comment"]
+    D -- No --> F{pullRequest present?}
+    F -- No --> G["ignored"]
+    F -- Yes --> H{action = reviewed?}
+    H -- Yes --> I["handleReviewSubmittedEvent()<br/>Fetch & process review comments"]
+    H -- No --> J{action = closed?}
+    J -- Yes --> K["handlePrClosed()"]
+    J -- No --> L{action = opened/synchronized?}
+    L -- Yes --> M["reviewPullRequest()"]
+    L -- No --> G
+```
+
 ## Docker Deployment
 
 ```mermaid
@@ -321,3 +404,4 @@ graph LR
 - Prompt files can be edited on the host without rebuilding the image
 - PostgreSQL persists review sessions and conversation history
 - Session data survives container restarts via the `pgdata` volume
+

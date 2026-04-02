@@ -7,8 +7,11 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.remus.giteabot.anthropic.AnthropicClient;
 import org.remus.giteabot.anthropic.model.AnthropicRequest;
+import org.remus.giteabot.config.BotConfigProperties;
 import org.remus.giteabot.config.PromptService;
 import org.remus.giteabot.gitea.GiteaApiClient;
+import org.remus.giteabot.gitea.model.GiteaReview;
+import org.remus.giteabot.gitea.model.GiteaReviewComment;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 import org.remus.giteabot.session.ReviewSession;
 import org.remus.giteabot.session.SessionService;
@@ -32,6 +35,9 @@ class CodeReviewServiceTest {
 
     @Mock
     private SessionService sessionService;
+
+    @Mock
+    private BotConfigProperties botConfig;
 
     @InjectMocks
     private CodeReviewService codeReviewService;
@@ -173,6 +179,196 @@ class CodeReviewServiceTest {
         assert result.contains("Response by Anthropic Gitea Bot");
     }
 
+    @Test
+    void handleInlineComment_postsInlineReviewComment() {
+        WebhookPayload payload = createInlineCommentPayload(
+                "@claude_bot explain this", "src/main/java/Foo.java",
+                "@@ -10,7 +10,7 @@\n code context", 15);
+        ReviewSession session = new ReviewSession("testowner", "testrepo", 1L, null);
+        session.addMessage("user", "Initial context");
+        session.addMessage("assistant", "Initial review");
+
+        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
+        when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
+        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
+        when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, null)).thenReturn(session);
+        when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
+        when(sessionService.toAnthropicMessages(session)).thenReturn(List.of(
+                AnthropicRequest.Message.builder().role("user").content("Initial context").build(),
+                AnthropicRequest.Message.builder().role("assistant").content("Initial review").build()
+        ));
+        when(anthropicClient.chat(anyList(), contains("src/main/java/Foo.java"), eq("test prompt"), isNull()))
+                .thenReturn("Here's the explanation");
+
+        codeReviewService.handleInlineComment(payload, null);
+
+        verify(giteaApiClient).addReaction("testowner", "testrepo", 55L, "eyes", null);
+        verify(giteaApiClient).postInlineReviewComment(
+                eq("testowner"), eq("testrepo"), eq(1L),
+                eq("src/main/java/Foo.java"), eq(15),
+                contains("Here's the explanation"), isNull());
+    }
+
+    @Test
+    void handleInlineComment_fallsBackToRegularComment_whenNoLine() {
+        WebhookPayload payload = createInlineCommentPayload(
+                "@claude_bot explain this", "src/main/java/Foo.java",
+                "@@ -10,7 +10,7 @@\n code context", null);
+        ReviewSession session = new ReviewSession("testowner", "testrepo", 1L, null);
+        session.addMessage("user", "Initial context");
+        session.addMessage("assistant", "Initial review");
+
+        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
+        when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
+        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
+        when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, null)).thenReturn(session);
+        when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
+        when(sessionService.toAnthropicMessages(session)).thenReturn(List.of(
+                AnthropicRequest.Message.builder().role("user").content("Initial context").build(),
+                AnthropicRequest.Message.builder().role("assistant").content("Initial review").build()
+        ));
+        when(anthropicClient.chat(anyList(), anyString(), eq("test prompt"), isNull()))
+                .thenReturn("Explanation without line");
+
+        codeReviewService.handleInlineComment(payload, null);
+
+        verify(giteaApiClient, never()).postInlineReviewComment(anyString(), anyString(), anyLong(),
+                anyString(), anyInt(), anyString(), anyString());
+        verify(giteaApiClient).postComment(eq("testowner"), eq("testrepo"), eq(1L),
+                contains("Explanation without line"), isNull());
+    }
+
+    @Test
+    void buildInlineCommentContext_includesFileAndDiffHunk() {
+        String result = codeReviewService.buildInlineCommentContext(
+                "src/Main.java", "@@ -1,5 +1,5 @@\n code", "@claude_bot explain this");
+        assert result.contains("src/Main.java");
+        assert result.contains("@@ -1,5 +1,5 @@");
+        assert result.contains("@claude_bot explain this");
+    }
+
+    @Test
+    void buildInlineCommentContext_withoutDiffHunk() {
+        String result = codeReviewService.buildInlineCommentContext(
+                "src/Main.java", null, "@claude_bot what is this?");
+        assert result.contains("src/Main.java");
+        assert !result.contains("diff hunk");
+        assert result.contains("@claude_bot what is this?");
+    }
+
+    @Test
+    void resolvePrNumber_fromIssue() {
+        WebhookPayload payload = createCommentPayload("test");
+        Long result = codeReviewService.resolvePrNumber(payload);
+        assert result.equals(1L);
+    }
+
+    @Test
+    void resolvePrNumber_fromPullRequest() {
+        WebhookPayload payload = new WebhookPayload();
+        WebhookPayload.PullRequest pr = new WebhookPayload.PullRequest();
+        pr.setNumber(5L);
+        payload.setPullRequest(pr);
+        Long result = codeReviewService.resolvePrNumber(payload);
+        assert result.equals(5L);
+    }
+
+    @Test
+    void handleReviewSubmitted_fetchesAndProcessesBotMentions() {
+        WebhookPayload payload = createReviewSubmittedPayload();
+        ReviewSession session = new ReviewSession("testowner", "testrepo", 2L, null);
+        session.addMessage("user", "Initial context");
+        session.addMessage("assistant", "Initial review");
+
+        when(botConfig.getAlias()).thenReturn("@claude_bot");
+        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
+        when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
+        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
+        when(sessionService.getOrCreateSession("testowner", "testrepo", 2L, null)).thenReturn(session);
+        when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
+        when(sessionService.toAnthropicMessages(session)).thenReturn(List.of(
+                AnthropicRequest.Message.builder().role("user").content("Initial context").build(),
+                AnthropicRequest.Message.builder().role("assistant").content("Initial review").build()
+        ));
+
+        // Set up review fetching
+        GiteaReview review = new GiteaReview();
+        review.setId(10L);
+        review.setState("COMMENT");
+        when(giteaApiClient.getReviews("testowner", "testrepo", 2L, null))
+                .thenReturn(List.of(review));
+
+        // Set up review comments - one with bot mention, one without
+        GiteaReviewComment botComment = new GiteaReviewComment();
+        botComment.setId(100L);
+        botComment.setBody("@claude_bot explain this");
+        botComment.setPath("src/main/java/Foo.java");
+        botComment.setDiffHunk("@@ -10,7 +10,7 @@\n code");
+        botComment.setLine(15);
+
+        GiteaReviewComment normalComment = new GiteaReviewComment();
+        normalComment.setId(101L);
+        normalComment.setBody("just a regular comment");
+        normalComment.setPath("src/main/java/Bar.java");
+        normalComment.setLine(5);
+
+        when(giteaApiClient.getReviewComments("testowner", "testrepo", 2L, 10L, null))
+                .thenReturn(List.of(botComment, normalComment));
+
+        when(anthropicClient.chat(anyList(), contains("src/main/java/Foo.java"), eq("test prompt"), isNull()))
+                .thenReturn("Here's the explanation");
+
+        codeReviewService.handleReviewSubmitted(payload, null);
+
+        // Should only process the bot-mentioning comment
+        verify(giteaApiClient).addReaction("testowner", "testrepo", 100L, "eyes", null);
+        verify(giteaApiClient).postInlineReviewComment(
+                eq("testowner"), eq("testrepo"), eq(2L),
+                eq("src/main/java/Foo.java"), eq(15),
+                contains("Here's the explanation"), isNull());
+
+        // Should NOT react to the normal comment
+        verify(giteaApiClient, never()).addReaction("testowner", "testrepo", 101L, "eyes", null);
+    }
+
+    @Test
+    void handleReviewSubmitted_noReviews_doesNothing() {
+        WebhookPayload payload = createReviewSubmittedPayload();
+
+        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
+        when(giteaApiClient.getReviews("testowner", "testrepo", 2L, null))
+                .thenReturn(List.of());
+
+        codeReviewService.handleReviewSubmitted(payload, null);
+
+        verify(anthropicClient, never()).chat(anyList(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void handleReviewSubmitted_noBotMentions_doesNothing() {
+        WebhookPayload payload = createReviewSubmittedPayload();
+
+        when(botConfig.getAlias()).thenReturn("@claude_bot");
+        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
+        when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
+        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
+
+        GiteaReview review = new GiteaReview();
+        review.setId(10L);
+        when(giteaApiClient.getReviews("testowner", "testrepo", 2L, null))
+                .thenReturn(List.of(review));
+
+        GiteaReviewComment normalComment = new GiteaReviewComment();
+        normalComment.setId(101L);
+        normalComment.setBody("just a regular comment");
+        when(giteaApiClient.getReviewComments("testowner", "testrepo", 2L, 10L, null))
+                .thenReturn(List.of(normalComment));
+
+        codeReviewService.handleReviewSubmitted(payload, null);
+
+        verify(anthropicClient, never()).chat(anyList(), anyString(), anyString(), anyString());
+    }
+
     private WebhookPayload createTestPayload() {
         WebhookPayload payload = new WebhookPayload();
         payload.setAction("opened");
@@ -213,6 +409,46 @@ class CodeReviewServiceTest {
         issue.setBody("Test body");
         issue.setPullRequest(new WebhookPayload.IssuePullRequest());
         payload.setIssue(issue);
+
+        WebhookPayload.Owner owner = new WebhookPayload.Owner();
+        owner.setLogin("testowner");
+
+        WebhookPayload.Repository repository = new WebhookPayload.Repository();
+        repository.setName("testrepo");
+        repository.setFullName("testowner/testrepo");
+        repository.setOwner(owner);
+        payload.setRepository(repository);
+
+        return payload;
+    }
+
+    private WebhookPayload createInlineCommentPayload(String body, String path, String diffHunk, Integer line) {
+        WebhookPayload payload = createCommentPayload(body);
+        payload.getComment().setId(55L);
+        payload.getComment().setPath(path);
+        payload.getComment().setDiffHunk(diffHunk);
+        payload.getComment().setLine(line);
+        return payload;
+    }
+
+    private WebhookPayload createReviewSubmittedPayload() {
+        WebhookPayload payload = new WebhookPayload();
+        payload.setAction("reviewed");
+
+        WebhookPayload.PullRequest pr = new WebhookPayload.PullRequest();
+        pr.setNumber(2L);
+        pr.setTitle("Test PR");
+        pr.setBody("Test body");
+        payload.setPullRequest(pr);
+
+        WebhookPayload.Review review = new WebhookPayload.Review();
+        review.setType("pull_request_review_comment");
+        review.setContent("");
+        payload.setReview(review);
+
+        WebhookPayload.Owner sender = new WebhookPayload.Owner();
+        sender.setLogin("tom");
+        payload.setSender(sender);
 
         WebhookPayload.Owner owner = new WebhookPayload.Owner();
         owner.setLogin("testowner");

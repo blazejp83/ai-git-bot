@@ -203,6 +203,188 @@ class GiteaWebhookControllerTest {
         verify(codeReviewService, never()).handleBotCommand(any(), any());
     }
 
+    @Test
+    void handleWebhook_inlineCommentWithBotMention_triggersInlineHandler() throws Exception {
+        when(botConfigProperties.getAlias()).thenReturn("@claude_bot");
+
+        String payload = """
+                {
+                    "action": "created",
+                    "comment": {
+                        "id": 55,
+                        "body": "@claude_bot explain this code",
+                        "user": {"login": "testuser"},
+                        "path": "src/main/java/Foo.java",
+                        "diff_hunk": "@@ -10,7 +10,7 @@\\n some code context",
+                        "line": 15
+                    },
+                    "issue": {
+                        "number": 3,
+                        "title": "Refactor PR",
+                        "pull_request": {}
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("inline comment response triggered"));
+
+        verify(codeReviewService).handleInlineComment(any(WebhookPayload.class), isNull());
+        verify(codeReviewService, never()).handleBotCommand(any(), any());
+    }
+
+    @Test
+    void handleWebhook_inlineCommentWithoutBotMention_ignored() throws Exception {
+        when(botConfigProperties.getAlias()).thenReturn("@claude_bot");
+
+        String payload = """
+                {
+                    "action": "created",
+                    "comment": {
+                        "id": 55,
+                        "body": "just a regular inline comment",
+                        "user": {"login": "testuser"},
+                        "path": "src/main/java/Foo.java",
+                        "line": 15
+                    },
+                    "issue": {
+                        "number": 3,
+                        "title": "Refactor PR",
+                        "pull_request": {}
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("ignored"));
+
+        verify(codeReviewService, never()).handleInlineComment(any(), any());
+    }
+
+    @Test
+    void handleWebhook_inlineCommentViaPullRequest_triggersInlineHandler() throws Exception {
+        when(botConfigProperties.getAlias()).thenReturn("@claude_bot");
+
+        String payload = """
+                {
+                    "action": "created",
+                    "comment": {
+                        "id": 56,
+                        "body": "@claude_bot what does this do?",
+                        "user": {"login": "testuser"},
+                        "path": "src/main/java/Bar.java",
+                        "diff_hunk": "@@ -1,5 +1,5 @@\\n code",
+                        "line": 3,
+                        "pull_request_review_id": 10
+                    },
+                    "pull_request": {
+                        "number": 7,
+                        "title": "Feature PR"
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("inline comment response triggered"));
+
+        verify(codeReviewService).handleInlineComment(any(WebhookPayload.class), isNull());
+    }
+
+    @Test
+    void handleWebhook_reviewSubmitted_triggersReviewHandler() throws Exception {
+        String payload = """
+                {
+                    "action": "reviewed",
+                    "number": 2,
+                    "pull_request": {
+                        "id": 2,
+                        "number": 2,
+                        "title": "Test PR"
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    },
+                    "sender": {
+                        "login": "tom"
+                    },
+                    "review": {
+                        "type": "pull_request_review_comment",
+                        "content": ""
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("review comments processing triggered"));
+
+        verify(codeReviewService).handleReviewSubmitted(any(WebhookPayload.class), isNull());
+    }
+
+    @Test
+    void handleWebhook_reviewSubmittedWithPrompt_passesPromptName() throws Exception {
+        String payload = """
+                {
+                    "action": "reviewed",
+                    "number": 2,
+                    "pull_request": {
+                        "id": 2,
+                        "number": 2,
+                        "title": "Test PR"
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    },
+                    "sender": {
+                        "login": "tom"
+                    },
+                    "review": {
+                        "type": "pull_request_review_comment",
+                        "content": ""
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .param("prompt", "security")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("review comments processing triggered"));
+
+        verify(codeReviewService).handleReviewSubmitted(any(WebhookPayload.class), eq("security"));
+    }
+
     private WebhookPayload createTestPayload(String action) {
         WebhookPayload payload = new WebhookPayload();
         payload.setAction(action);

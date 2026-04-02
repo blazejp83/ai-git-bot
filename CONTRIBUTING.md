@@ -92,12 +92,15 @@ Follow the [Conventional Commits](https://www.conventionalcommits.org/) format:
 
 ### Project Structure
 
+See [Architecture Documentation](doc/ARCHITECTURE.md) for detailed component descriptions and request flows.
+
 ```
 src/main/java/org/remus/giteabot/
 ├── config/       # Configuration classes and prompt service
-├── gitea/        # Gitea webhook controller and API client
+├── gitea/        # Gitea webhook controller, API client, and models
 ├── anthropic/    # Anthropic API client and models
-└── review/       # Code review orchestration
+├── review/       # Code review orchestration
+└── session/      # Session management and persistence
 ```
 
 ### Testing

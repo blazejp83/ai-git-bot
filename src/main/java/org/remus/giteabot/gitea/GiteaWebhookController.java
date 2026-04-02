@@ -23,6 +23,12 @@ public class GiteaWebhookController {
     @PostMapping
     public ResponseEntity<String> handleWebhook(@RequestBody WebhookPayload payload,
                                                 @RequestParam(name = "prompt", required = false) String promptName) {
+        // Handle inline review comments (bot mention in code-level review comments)
+        if (payload.getComment() != null && payload.getComment().getPath() != null
+                && !payload.getComment().getPath().isBlank()) {
+            return handleInlineReviewComment(payload, promptName);
+        }
+
         // Handle issue_comment events (bot commands in PR comments)
         if (payload.getComment() != null && payload.getIssue() != null) {
             return handleCommentEvent(payload, promptName);
@@ -35,6 +41,11 @@ public class GiteaWebhookController {
         }
 
         String action = payload.getAction();
+
+        // Handle review submitted events (inline comments submitted as part of a review)
+        if ("reviewed".equals(action) && payload.getReview() != null) {
+            return handleReviewSubmittedEvent(payload, promptName);
+        }
 
         if ("closed".equals(action)) {
             log.info("PR #{} in {} was closed, cleaning up session",
@@ -58,6 +69,53 @@ public class GiteaWebhookController {
         codeReviewService.reviewPullRequest(payload, promptName);
 
         return ResponseEntity.ok("review triggered");
+    }
+
+    private ResponseEntity<String> handleInlineReviewComment(WebhookPayload payload, String promptName) {
+        if (!"created".equals(payload.getAction())) {
+            log.debug("Ignoring inline comment action: {}", payload.getAction());
+            return ResponseEntity.ok("ignored");
+        }
+
+        String commentBody = payload.getComment().getBody();
+        if (commentBody == null || !commentBody.contains(botConfig.getAlias())) {
+            log.debug("Ignoring inline comment without bot mention");
+            return ResponseEntity.ok("ignored");
+        }
+
+        // Determine PR number from either issue or pullRequest
+        Long prNumber = null;
+        if (payload.getIssue() != null) {
+            prNumber = payload.getIssue().getNumber();
+        } else if (payload.getPullRequest() != null) {
+            prNumber = payload.getPullRequest().getNumber();
+        }
+
+        if (prNumber == null) {
+            log.debug("Ignoring inline comment: unable to determine PR number");
+            return ResponseEntity.ok("ignored");
+        }
+
+        log.info("Received inline review comment #{} on file {} in {}, PR #{}",
+                payload.getComment().getId(),
+                payload.getComment().getPath(),
+                payload.getRepository().getFullName(),
+                prNumber);
+
+        codeReviewService.handleInlineComment(payload, promptName);
+
+        return ResponseEntity.ok("inline comment response triggered");
+    }
+
+    private ResponseEntity<String> handleReviewSubmittedEvent(WebhookPayload payload, String promptName) {
+        log.info("Received review submitted event for PR #{} in {}, review type={}",
+                payload.getPullRequest().getNumber(),
+                payload.getRepository().getFullName(),
+                payload.getReview().getType());
+
+        codeReviewService.handleReviewSubmitted(payload, promptName);
+
+        return ResponseEntity.ok("review comments processing triggered");
     }
 
     private ResponseEntity<String> handleCommentEvent(WebhookPayload payload, String promptName) {

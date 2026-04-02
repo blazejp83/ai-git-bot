@@ -21,6 +21,10 @@ public class WebhookPayload {
 
     private Issue issue;
 
+    private Review review;
+
+    private Owner sender;
+
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class PullRequest {
@@ -69,6 +73,17 @@ public class WebhookPayload {
         private Long id;
         private String body;
         private Owner user;
+
+        // Review comment specific fields (inline comments on code)
+        private String path;
+
+        @JsonProperty("diff_hunk")
+        private String diffHunk;
+
+        private Integer line;
+
+        @JsonProperty("pull_request_review_id")
+        private Long pullRequestReviewId;
     }
 
     @Data
@@ -86,5 +101,13 @@ public class WebhookPayload {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class IssuePullRequest {
         private Boolean merged;
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class Review {
+        private Long id;
+        private String type;
+        private String content;
     }
 }
