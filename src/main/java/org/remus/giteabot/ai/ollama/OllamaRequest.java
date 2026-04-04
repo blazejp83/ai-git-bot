@@ -1,6 +1,5 @@
-package org.remus.giteabot.anthropic.model;
+package org.remus.giteabot.ai.ollama;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Builder;
 import lombok.Data;
 
@@ -8,16 +7,13 @@ import java.util.List;
 
 @Data
 @Builder
-public class AnthropicRequest {
+public class OllamaRequest {
 
     private String model;
 
-    @JsonProperty("max_tokens")
-    private int maxTokens;
-
-    private String system;
-
     private List<Message> messages;
+
+    private boolean stream;
 
     @Data
     @Builder

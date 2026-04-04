@@ -1,29 +1,24 @@
-package org.remus.giteabot.anthropic;
+package org.remus.giteabot.ai;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatusCode;
 import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.RestClient;
 
-import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
 
-class AnthropicClientTest {
+class AbstractAiClientTest {
 
-    private AnthropicClient createClient(int maxDiffCharsPerChunk, int maxDiffChunks, int retryTruncatedChunkChars) {
-        RestClient restClient = mock(RestClient.class);
-        return new AnthropicClient(restClient, "claude-sonnet-4-20250514", 1024,
+    private TestAiClient createClient(int maxDiffCharsPerChunk, int maxDiffChunks, int retryTruncatedChunkChars) {
+        return new TestAiClient("test-model", 1024,
                 maxDiffCharsPerChunk, maxDiffChunks, retryTruncatedChunkChars);
     }
 
     @Test
     void splitDiffIntoChunks_smallDiff_singleChunk() {
-        AnthropicClient client = createClient(20, 3, 10);
+        TestAiClient client = createClient(20, 3, 10);
 
-        AnthropicClient.ChunkingResult result = client.splitDiffIntoChunks("line1\nline2");
+        AbstractAiClient.ChunkingResult result = client.splitDiffIntoChunks("line1\nline2");
 
         assertEquals(1, result.chunks().size());
         assertFalse(result.wasTruncated());
@@ -32,9 +27,9 @@ class AnthropicClientTest {
 
     @Test
     void splitDiffIntoChunks_largeDiff_truncatedAfterMaxChunks() {
-        AnthropicClient client = createClient(10, 2, 6);
+        TestAiClient client = createClient(10, 2, 6);
 
-        AnthropicClient.ChunkingResult result = client.splitDiffIntoChunks("0123456789ABCDEFGHIJxyz");
+        AbstractAiClient.ChunkingResult result = client.splitDiffIntoChunks("0123456789ABCDEFGHIJxyz");
 
         assertEquals(2, result.chunks().size());
         assertTrue(result.wasTruncated());
@@ -44,9 +39,9 @@ class AnthropicClientTest {
 
     @Test
     void splitDiffIntoChunks_emptyDiff_singleEmptyChunk() {
-        AnthropicClient client = createClient(10, 2, 6);
+        TestAiClient client = createClient(10, 2, 6);
 
-        AnthropicClient.ChunkingResult result = client.splitDiffIntoChunks("");
+        AbstractAiClient.ChunkingResult result = client.splitDiffIntoChunks("");
 
         assertEquals(1, result.chunks().size());
         assertFalse(result.wasTruncated());
@@ -54,7 +49,7 @@ class AnthropicClientTest {
 
     @Test
     void buildUserMessage_includesChunkAndRetryHint() {
-        AnthropicClient client = createClient(10, 2, 6);
+        TestAiClient client = createClient(10, 2, 6);
 
         String message = client.buildUserMessage("title", "body", "+line", 2, 3, true);
 
@@ -64,7 +59,7 @@ class AnthropicClientTest {
 
     @Test
     void truncateDiff_appendsMarker() {
-        AnthropicClient client = createClient(10, 2, 6);
+        TestAiClient client = createClient(10, 2, 6);
 
         String truncated = client.truncateDiff("0123456789ABCDEFGHIJ", 8);
 
@@ -74,7 +69,7 @@ class AnthropicClientTest {
 
     @Test
     void truncateDiff_shortDiff_unchanged() {
-        AnthropicClient client = createClient(10, 2, 6);
+        TestAiClient client = createClient(10, 2, 6);
 
         String result = client.truncateDiff("short", 100);
 
@@ -82,43 +77,12 @@ class AnthropicClientTest {
     }
 
     @Test
-    void isPromptTooLongError_detectsError() {
-        AnthropicClient client = createClient(10, 2, 6);
-
-        HttpClientErrorException ex = HttpClientErrorException.BadRequest.create(
-                HttpStatusCode.valueOf(400),
-                "Bad Request",
-                HttpHeaders.EMPTY,
-                "{\"error\":{\"message\":\"prompt is too long: 208154 tokens > 200000 maximum\"}}".getBytes(StandardCharsets.UTF_8),
-                StandardCharsets.UTF_8);
-
-        assertTrue(client.isPromptTooLongError(ex));
-    }
-
-    @Test
-    void isPromptTooLongError_ignoresUnrelatedErrors() {
-        AnthropicClient client = createClient(10, 2, 6);
-
-        HttpClientErrorException ex = HttpClientErrorException.BadRequest.create(
-                HttpStatusCode.valueOf(400),
-                "Bad Request",
-                HttpHeaders.EMPTY,
-                "{\"error\":{\"message\":\"invalid api key\"}}".getBytes(StandardCharsets.UTF_8),
-                StandardCharsets.UTF_8);
-
-        assertFalse(client.isPromptTooLongError(ex));
-    }
-
-    @Test
     void reviewDiff_bestEffort_partialFailure_returnsPartialResult() {
-        RestClient restClient = mock(RestClient.class);
-
         // Diff "abcde\nabcde_end" (15 chars) → with maxDiffCharsPerChunk=10 splits into
         // chunk1 = "abcde" (split at newline pos 5), chunk2 = "\nabcde_end" (10 chars)
         String diff = "abcde\nabcde_end";
 
-        AnthropicClient realClient = new AnthropicClient(restClient, "claude-sonnet-4-20250514", 1024,
-                10, 4, 6) {
+        TestAiClient client = new TestAiClient("test-model", 1024, 10, 4, 6) {
             private int callCount = 0;
 
             @Override
@@ -133,7 +97,7 @@ class AnthropicClientTest {
             }
         };
 
-        String result = realClient.reviewDiff("Test PR", "body", diff);
+        String result = client.reviewDiff("Test PR", "body", diff);
 
         assertTrue(result.contains("Looks good for chunk 1"), "Should contain successful chunk review");
         assertTrue(result.contains("failed"), "Should mention the failed chunk");
@@ -142,9 +106,7 @@ class AnthropicClientTest {
 
     @Test
     void reviewDiff_bestEffort_allChunksFail_throwsException() {
-        RestClient restClient = mock(RestClient.class);
-        AnthropicClient client = new AnthropicClient(restClient, "claude-sonnet-4-20250514", 1024,
-                10, 4, 6) {
+        TestAiClient client = new TestAiClient("test-model", 1024, 10, 4, 6) {
             @Override
             String reviewSingleChunkInternal(String prTitle, String prBody, String diffChunk,
                                              int chunkNumber, int totalChunks, boolean isRetry,
@@ -164,9 +126,7 @@ class AnthropicClientTest {
 
     @Test
     void reviewDiff_withCustomSystemPromptAndModel() {
-        RestClient restClient = mock(RestClient.class);
-        AnthropicClient client = new AnthropicClient(restClient, "claude-sonnet-4-20250514", 1024,
-                5000, 4, 2000) {
+        TestAiClient client = new TestAiClient("test-model", 1024, 5000, 4, 2000) {
             @Override
             String reviewSingleChunkInternal(String prTitle, String prBody, String diffChunk,
                                              int chunkNumber, int totalChunks, boolean isRetry,
@@ -183,20 +143,46 @@ class AnthropicClientTest {
 
     @Test
     void reviewDiff_withNullSystemPrompt_usesDefault() {
-        RestClient restClient = mock(RestClient.class);
-        AnthropicClient client = new AnthropicClient(restClient, "claude-sonnet-4-20250514", 1024,
-                5000, 4, 2000) {
+        TestAiClient client = new TestAiClient("test-model", 1024, 5000, 4, 2000) {
             @Override
             String reviewSingleChunkInternal(String prTitle, String prBody, String diffChunk,
                                              int chunkNumber, int totalChunks, boolean isRetry,
                                              String systemPrompt, String effectiveModel) {
-                assertEquals(AnthropicClient.DEFAULT_SYSTEM_PROMPT, systemPrompt);
-                assertEquals("claude-sonnet-4-20250514", effectiveModel);
+                assertEquals(AbstractAiClient.DEFAULT_SYSTEM_PROMPT, systemPrompt);
+                assertEquals("test-model", effectiveModel);
                 return "Review with default prompt";
             }
         };
 
         String result = client.reviewDiff("Title", "Body", "some diff", null, null);
         assertTrue(result.contains("Review with default prompt"));
+    }
+
+    /**
+     * Concrete test implementation of AbstractAiClient that provides controllable behavior.
+     */
+    static class TestAiClient extends AbstractAiClient {
+
+        TestAiClient(String model, int maxTokens, int maxDiffCharsPerChunk,
+                     int maxDiffChunks, int retryTruncatedChunkChars) {
+            super(model, maxTokens, maxDiffCharsPerChunk, maxDiffChunks, retryTruncatedChunkChars);
+        }
+
+        @Override
+        protected String sendReviewRequest(String systemPrompt, String effectiveModel,
+                                           int maxTokens, String userMessage) {
+            return "mock review response";
+        }
+
+        @Override
+        protected String sendChatRequest(String systemPrompt, String effectiveModel,
+                                         int maxTokens, List<AiMessage> messages) {
+            return "mock chat response";
+        }
+
+        @Override
+        protected boolean isPromptTooLongError(HttpClientErrorException e) {
+            return false;
+        }
     }
 }

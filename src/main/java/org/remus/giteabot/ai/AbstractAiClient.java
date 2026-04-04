@@ -1,21 +1,18 @@
-package org.remus.giteabot.anthropic;
+package org.remus.giteabot.ai;
 
 import lombok.extern.slf4j.Slf4j;
-import org.remus.giteabot.anthropic.model.AnthropicRequest;
-import org.remus.giteabot.anthropic.model.AnthropicResponse;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.RestClient;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
+/**
+ * Base class for AI client implementations that provides common diff chunking,
+ * retry logic, and message building. Subclasses implement the provider-specific
+ * API calls via {@link #sendReviewRequest} and {@link #sendChatRequest}.
+ */
 @Slf4j
-@Service
-public class AnthropicClient {
+public abstract class AbstractAiClient implements AiClient {
 
     static final String DEFAULT_SYSTEM_PROMPT = """
             You are an experienced software engineer performing a code review.
@@ -32,20 +29,14 @@ public class AnthropicClient {
             Do not repeat the diff back. Be concise but thorough.
             """;
 
-    private final RestClient anthropicRestClient;
     private final String model;
     private final int maxTokens;
     private final int maxDiffCharsPerChunk;
     private final int maxDiffChunks;
     private final int retryTruncatedChunkChars;
 
-    public AnthropicClient(@Qualifier("anthropicRestClient") RestClient anthropicRestClient,
-                           @Value("${anthropic.model}") String model,
-                           @Value("${anthropic.max-tokens}") int maxTokens,
-                           @Value("${anthropic.max-diff-chars-per-chunk:120000}") int maxDiffCharsPerChunk,
-                           @Value("${anthropic.max-diff-chunks:8}") int maxDiffChunks,
-                           @Value("${anthropic.retry-truncated-chunk-chars:60000}") int retryTruncatedChunkChars) {
-        this.anthropicRestClient = anthropicRestClient;
+    protected AbstractAiClient(String model, int maxTokens, int maxDiffCharsPerChunk,
+                               int maxDiffChunks, int retryTruncatedChunkChars) {
         this.model = model;
         this.maxTokens = maxTokens;
         this.maxDiffCharsPerChunk = maxDiffCharsPerChunk;
@@ -53,64 +44,63 @@ public class AnthropicClient {
         this.retryTruncatedChunkChars = retryTruncatedChunkChars;
     }
 
+    protected String getModel() {
+        return model;
+    }
+
+    protected int getMaxTokens() {
+        return maxTokens;
+    }
+
+    /**
+     * Sends a single review request to the AI provider.
+     *
+     * @return the review text
+     */
+    protected abstract String sendReviewRequest(String systemPrompt, String effectiveModel,
+                                                int maxTokens, String userMessage);
+
+    /**
+     * Sends a multi-turn chat request to the AI provider.
+     *
+     * @return the assistant's response text
+     */
+    protected abstract String sendChatRequest(String systemPrompt, String effectiveModel,
+                                              int maxTokens, List<AiMessage> messages);
+
+    /**
+     * Detects whether a client error indicates the prompt exceeded the model's input limit.
+     */
+    protected abstract boolean isPromptTooLongError(HttpClientErrorException e);
+
+    @Override
     public String reviewDiff(String prTitle, String prBody, String diff) {
         return reviewDiff(prTitle, prBody, diff, null, null);
     }
 
-    /**
-     * Sends a multi-turn conversation to the Anthropic API and returns the assistant's response.
-     * The conversation history is sent in full so the model has context from previous interactions.
-     */
-    public String chat(List<AnthropicRequest.Message> conversationHistory, String newUserMessage,
+    @Override
+    public String chat(List<AiMessage> conversationHistory, String newUserMessage,
                        String systemPrompt, String modelOverride) {
-        String effectiveModel = (modelOverride != null && !modelOverride.isBlank()) ? modelOverride : model;
-        String effectivePrompt = (systemPrompt != null && !systemPrompt.isBlank()) ? systemPrompt : DEFAULT_SYSTEM_PROMPT;
+        String effectiveModel = resolveModel(modelOverride);
+        String effectivePrompt = resolvePrompt(systemPrompt);
 
-        log.info("Sending chat message to Anthropic model={}, conversation size={}", effectiveModel, conversationHistory.size());
+        log.info("Sending chat message to AI provider model={}, conversation size={}", effectiveModel, conversationHistory.size());
 
-        List<AnthropicRequest.Message> messages = new ArrayList<>(conversationHistory);
-        messages.add(AnthropicRequest.Message.builder()
+        List<AiMessage> messages = new ArrayList<>(conversationHistory);
+        messages.add(AiMessage.builder()
                 .role("user")
                 .content(newUserMessage)
                 .build());
 
-        AnthropicRequest request = AnthropicRequest.builder()
-                .model(effectiveModel)
-                .maxTokens(maxTokens)
-                .system(effectivePrompt)
-                .messages(messages)
-                .build();
-
-        AnthropicResponse response = anthropicRestClient.post()
-                .uri("/v1/messages")
-                .body(request)
-                .retrieve()
-                .body(AnthropicResponse.class);
-
-        if (response == null || response.getContent() == null || response.getContent().isEmpty()) {
-            log.warn("Empty response from Anthropic API");
-            return "Unable to generate response - empty response from AI.";
-        }
-
-        String result = response.getContent().stream()
-                .filter(block -> "text".equals(block.getType()))
-                .map(AnthropicResponse.ContentBlock::getText)
-                .reduce("", (a, b) -> a + b);
-
-        if (response.getUsage() != null) {
-            log.info("Chat response received: {} input tokens, {} output tokens",
-                    response.getUsage().getInputTokens(),
-                    response.getUsage().getOutputTokens());
-        }
-
-        return result;
+        return sendChatRequest(effectivePrompt, effectiveModel, maxTokens, messages);
     }
 
+    @Override
     public String reviewDiff(String prTitle, String prBody, String diff, String systemPrompt, String modelOverride) {
-        String effectiveModel = (modelOverride != null && !modelOverride.isBlank()) ? modelOverride : model;
-        String effectivePrompt = (systemPrompt != null && !systemPrompt.isBlank()) ? systemPrompt : DEFAULT_SYSTEM_PROMPT;
+        String effectiveModel = resolveModel(modelOverride);
+        String effectivePrompt = resolvePrompt(systemPrompt);
 
-        log.info("Requesting code review from Anthropic model={}", effectiveModel);
+        log.info("Requesting code review from AI provider model={}", effectiveModel);
         ChunkingResult chunkingResult = splitDiffIntoChunks(diff);
         List<String> reviews = new ArrayList<>();
         int failedChunks = 0;
@@ -185,44 +175,7 @@ public class AnthropicClient {
                                      int chunkNumber, int totalChunks, boolean isRetry,
                                      String systemPrompt, String effectiveModel) {
         String userMessage = buildUserMessage(prTitle, prBody, diffChunk, chunkNumber, totalChunks, isRetry);
-
-        AnthropicRequest request = AnthropicRequest.builder()
-                .model(effectiveModel)
-                .maxTokens(maxTokens)
-                .system(systemPrompt)
-                .messages(List.of(
-                        AnthropicRequest.Message.builder()
-                                .role("user")
-                                .content(userMessage)
-                                .build()
-                ))
-                .build();
-
-        AnthropicResponse response = anthropicRestClient.post()
-                .uri("/v1/messages")
-                .body(request)
-                .retrieve()
-                .body(AnthropicResponse.class);
-
-        if (response == null || response.getContent() == null || response.getContent().isEmpty()) {
-            log.warn("Empty response from Anthropic API");
-            return "Unable to generate review - empty response from AI.";
-        }
-
-        String review = response.getContent().stream()
-                .filter(block -> "text".equals(block.getType()))
-                .map(AnthropicResponse.ContentBlock::getText)
-                .reduce("", (a, b) -> a + b);
-
-        if (response.getUsage() != null) {
-            log.info("Review received for chunk {}/{}: {} input tokens, {} output tokens",
-                    chunkNumber,
-                    totalChunks,
-                    response.getUsage().getInputTokens(),
-                    response.getUsage().getOutputTokens());
-        }
-
-        return review;
+        return sendReviewRequest(systemPrompt, effectiveModel, maxTokens, userMessage);
     }
 
     ChunkingResult splitDiffIntoChunks(String diff) {
@@ -289,13 +242,12 @@ public class AnthropicClient {
         return diffChunk.substring(0, maxChars) + "\n\n# ... truncated due to model input limit ...";
     }
 
-    boolean isPromptTooLongError(HttpClientErrorException e) {
-        String body = e.getResponseBodyAsString();
-        if (body == null) {
-            return false;
-        }
-        String normalized = body.toLowerCase(Locale.ROOT);
-        return normalized.contains("prompt is too long") || normalized.contains("maximum");
+    private String resolveModel(String modelOverride) {
+        return (modelOverride != null && !modelOverride.isBlank()) ? modelOverride : model;
+    }
+
+    private String resolvePrompt(String systemPrompt) {
+        return (systemPrompt != null && !systemPrompt.isBlank()) ? systemPrompt : DEFAULT_SYSTEM_PROMPT;
     }
 
     record ChunkingResult(List<String> chunks, boolean wasTruncated) {}

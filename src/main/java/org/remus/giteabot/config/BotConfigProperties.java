@@ -10,8 +10,8 @@ import org.springframework.stereotype.Component;
 public class BotConfigProperties {
 
     /**
-     * The mention alias the bot responds to in PR comments (e.g., "@claude_bot").
+     * The mention alias the bot responds to in PR comments (e.g., "@ai_bot").
      * Users mention this alias followed by a command to interact with the bot.
      */
-    private String alias = "@claude_bot";
+    private String alias = "@ai_bot";
 }
