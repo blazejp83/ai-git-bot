@@ -2,8 +2,8 @@ package org.remus.giteabot.review;
 
 import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.NonNull;
-import org.remus.giteabot.anthropic.AnthropicClient;
-import org.remus.giteabot.anthropic.model.AnthropicRequest;
+import org.remus.giteabot.ai.AiClient;
+import org.remus.giteabot.ai.AiMessage;
 import org.remus.giteabot.config.BotConfigProperties;
 import org.remus.giteabot.config.PromptService;
 import org.remus.giteabot.gitea.GiteaApiClient;
@@ -24,16 +24,16 @@ public class CodeReviewService {
     static final int MAX_DIFF_CHARS_FOR_CONTEXT = 60000;
 
     private final GiteaApiClient giteaApiClient;
-    private final AnthropicClient anthropicClient;
+    private final AiClient aiClient;
     private final PromptService promptService;
     private final SessionService sessionService;
     private final BotConfigProperties botConfig;
 
-    public CodeReviewService(GiteaApiClient giteaApiClient, AnthropicClient anthropicClient,
+    public CodeReviewService(GiteaApiClient giteaApiClient, AiClient aiClient,
                              PromptService promptService, SessionService sessionService,
                              BotConfigProperties botConfig) {
         this.giteaApiClient = giteaApiClient;
-        this.anthropicClient = anthropicClient;
+        this.aiClient = aiClient;
         this.promptService = promptService;
         this.sessionService = sessionService;
         this.botConfig = botConfig;
@@ -65,7 +65,7 @@ public class CodeReviewService {
             String review;
             if (session.getMessages().isEmpty()) {
                 // Initial review: use the chunked diff review for thoroughness
-                review = anthropicClient.reviewDiff(prTitle, prBody, diff, systemPrompt, modelOverride);
+                review = aiClient.reviewDiff(prTitle, prBody, diff, systemPrompt, modelOverride);
 
                 // Store a summary user message and the review in the session
                 String userSummary = buildPrSummaryMessage(prTitle, prBody);
@@ -74,9 +74,9 @@ public class CodeReviewService {
             } else {
                 // PR was updated: use conversation context with new diff
                 String updateMessage = buildPrUpdateMessage(prTitle, diff);
-                List<AnthropicRequest.Message> history = sessionService.toAnthropicMessages(session);
+                List<AiMessage> history = sessionService.toAiMessages(session);
 
-                review = anthropicClient.chat(history, updateMessage, systemPrompt, modelOverride);
+                review = aiClient.chat(history, updateMessage, systemPrompt, modelOverride);
 
                 sessionService.addMessage(session, "user", updateMessage);
                 sessionService.addMessage(session, "assistant", review);
@@ -127,8 +127,8 @@ public class CodeReviewService {
             }
 
             // Send the comment as a new message in the conversation
-            List<AnthropicRequest.Message> history = sessionService.toAnthropicMessages(session);
-            String response = anthropicClient.chat(history, commentBody, systemPrompt, modelOverride);
+            List<AiMessage> history = sessionService.toAiMessages(session);
+            String response = aiClient.chat(history, commentBody, systemPrompt, modelOverride);
 
             // Store messages in session
             sessionService.addMessage(session, "user", commentBody);
@@ -235,9 +235,9 @@ public class CodeReviewService {
         // Build context message with file/code context
         String contextMessage = buildInlineCommentContext(filePath, diffHunk, commentBody);
 
-        // Send to Claude
-        List<AnthropicRequest.Message> history = sessionService.toAnthropicMessages(session);
-        String response = anthropicClient.chat(history, contextMessage, systemPrompt, modelOverride);
+        // Send to AI
+        List<AiMessage> history = sessionService.toAiMessages(session);
+        String response = aiClient.chat(history, contextMessage, systemPrompt, modelOverride);
 
         // Store in session
         sessionService.addMessage(session, "user", contextMessage);
@@ -289,10 +289,12 @@ public class CodeReviewService {
             List<GiteaReviewComment> comments = giteaApiClient.getReviewComments(
                     owner, repo, prNumber, latestReview.getId(), giteaToken);
 
-            // Filter for comments that mention the bot
+            // Filter for comments that mention the bot, excluding the bot's own comments
             String botAlias = botConfig.getAlias();
+            String botUsername = botConfig.getUsername();
             List<GiteaReviewComment> botMentionComments = comments.stream()
                     .filter(c -> c.getBody() != null && c.getBody().contains(botAlias))
+                    .filter(c -> !isBotComment(c, botUsername))
                     .toList();
 
             if (botMentionComments.isEmpty()) {
@@ -391,12 +393,12 @@ public class CodeReviewService {
 
     String formatReviewComment(String review) {
         return "## 🤖 AI Code Review\n\n" + review +
-                "\n\n---\n*Automated review by Anthropic Gitea Bot*";
+                "\n\n---\n*Automated review by AI Gitea Bot*";
     }
 
     String formatBotResponse(String response) {
         return "## 🤖 Bot Response\n\n" + response +
-                "\n\n---\n*Response by Anthropic Gitea Bot*";
+                "\n\n---\n*Response by AI Gitea Bot*";
     }
 
     private String buildPrSummaryMessage(String prTitle, String prBody) {
@@ -435,5 +437,18 @@ public class CodeReviewService {
             return payload.getPullRequest().getNumber();
         }
         return null;
+    }
+
+    /**
+     * Checks whether a review comment was written by the bot itself.
+     * Prevents the bot from responding to its own comments in review-submitted events.
+     */
+    private boolean isBotComment(GiteaReviewComment comment, String botUsername) {
+        if (botUsername == null || botUsername.isBlank()) {
+            return false;
+        }
+        return comment.getUser() != null
+                && comment.getUser().getLogin() != null
+                && botUsername.equalsIgnoreCase(comment.getUser().getLogin());
     }
 }

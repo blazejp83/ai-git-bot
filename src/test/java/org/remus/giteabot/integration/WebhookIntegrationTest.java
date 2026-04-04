@@ -75,10 +75,10 @@ class WebhookIntegrationTest {
 
         registry.add("gitea.url", () -> "http://localhost:" + giteaPort);
         registry.add("gitea.token", () -> "test-token");
-        registry.add("anthropic.api.url", () -> "http://localhost:" + anthropicPort);
-        registry.add("anthropic.api.key", () -> "test-api-key");
-        registry.add("anthropic.max-diff-chars-per-chunk", () -> "50000");
-        registry.add("anthropic.max-diff-chunks", () -> "4");
+        registry.add("ai.anthropic.api-url", () -> "http://localhost:" + anthropicPort);
+        registry.add("ai.anthropic.api-key", () -> "test-api-key");
+        registry.add("ai.max-diff-chars-per-chunk", () -> "50000");
+        registry.add("ai.max-diff-chunks", () -> "4");
         registry.add("prompts.dir", tempPromptDir::toString);
         registry.add("prompts.definitions.default.file", () -> "default.md");
         registry.add("prompts.definitions.security.file", () -> "security.md");

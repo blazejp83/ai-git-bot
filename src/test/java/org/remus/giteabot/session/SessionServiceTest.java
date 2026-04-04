@@ -5,7 +5,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.remus.giteabot.anthropic.model.AnthropicRequest;
+import org.remus.giteabot.ai.AiMessage;
 
 import java.util.List;
 import java.util.Optional;
@@ -71,12 +71,12 @@ class SessionServiceTest {
     }
 
     @Test
-    void toAnthropicMessages_convertsCorrectly() {
+    void toAiMessages_convertsCorrectly() {
         ReviewSession session = new ReviewSession("owner", "repo", 1L, null);
         session.addMessage("user", "Review this PR");
         session.addMessage("assistant", "Looks good!");
 
-        List<AnthropicRequest.Message> messages = sessionService.toAnthropicMessages(session);
+        List<AiMessage> messages = sessionService.toAiMessages(session);
 
         assertEquals(2, messages.size());
         assertEquals("user", messages.get(0).getRole());

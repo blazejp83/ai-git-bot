@@ -1,7 +1,7 @@
 package org.remus.giteabot.session;
 
 import lombok.extern.slf4j.Slf4j;
-import org.remus.giteabot.anthropic.model.AnthropicRequest;
+import org.remus.giteabot.ai.AiMessage;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -49,11 +49,11 @@ public class SessionService {
     }
 
     /**
-     * Converts stored conversation messages to Anthropic API message format.
+     * Converts stored conversation messages to provider-agnostic AI message format.
      */
-    public List<AnthropicRequest.Message> toAnthropicMessages(ReviewSession session) {
+    public List<AiMessage> toAiMessages(ReviewSession session) {
         return session.getMessages().stream()
-                .map(m -> AnthropicRequest.Message.builder()
+                .map(m -> AiMessage.builder()
                         .role(m.getRole())
                         .content(m.getContent())
                         .build())
