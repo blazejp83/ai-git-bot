@@ -1,4 +1,4 @@
-package org.remus.giteabot.anthropic.model;
+package org.remus.giteabot.ai.anthropic;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Builder;

@@ -5,8 +5,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.remus.giteabot.anthropic.AnthropicClient;
-import org.remus.giteabot.anthropic.model.AnthropicRequest;
+import org.remus.giteabot.ai.AiClient;
+import org.remus.giteabot.ai.AiMessage;
 import org.remus.giteabot.config.BotConfigProperties;
 import org.remus.giteabot.config.PromptService;
 import org.remus.giteabot.gitea.GiteaApiClient;
@@ -41,7 +41,7 @@ class CodeReviewServiceTest {
     private GiteaApiClient giteaApiClient;
 
     @Mock
-    private AnthropicClient anthropicClient;
+    private AiClient aiClient;
 
     @Mock
     private PromptService promptService;
@@ -67,7 +67,7 @@ class CodeReviewServiceTest {
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
         when(giteaApiClient.getPullRequestDiff("testowner", "testrepo", 1L, null))
                 .thenReturn("diff --git a/file.txt b/file.txt\n+new line");
-        when(anthropicClient.reviewDiff(eq("Test PR"), eq("Test body"), anyString(),
+        when(aiClient.reviewDiff(eq("Test PR"), eq("Test body"), anyString(),
                 eq("test system prompt"), isNull()))
                 .thenReturn("Looks good!");
 
@@ -89,7 +89,7 @@ class CodeReviewServiceTest {
 
         codeReviewService.reviewPullRequest(payload, null);
 
-        verify(anthropicClient, never()).reviewDiff(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(aiClient, never()).reviewDiff(anyString(), anyString(), anyString(), anyString(), anyString());
         verify(giteaApiClient, never()).postReviewComment(anyString(), anyString(), anyLong(), anyString(), anyString());
     }
 
@@ -105,7 +105,7 @@ class CodeReviewServiceTest {
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
         when(giteaApiClient.getPullRequestDiff("testowner", "testrepo", 1L, "custom-token"))
                 .thenReturn("diff --git a/file.txt b/file.txt\n+new line");
-        when(anthropicClient.reviewDiff(eq("Test PR"), eq("Test body"), anyString(),
+        when(aiClient.reviewDiff(eq("Test PR"), eq("Test body"), anyString(),
                 eq("You are a security reviewer."), eq("claude-opus-4-20250514")))
                 .thenReturn("Security looks good!");
 
@@ -127,24 +127,24 @@ class CodeReviewServiceTest {
         when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
         when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, null)).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
-        when(sessionService.toAnthropicMessages(session)).thenReturn(List.of(
-                AnthropicRequest.Message.builder().role("user").content("Previous question").build(),
-                AnthropicRequest.Message.builder().role("assistant").content("Previous answer").build()
+        when(sessionService.toAiMessages(session)).thenReturn(List.of(
+                AiMessage.builder().role("user").content("Previous question").build(),
+                AiMessage.builder().role("assistant").content("Previous answer").build()
         ));
         when(giteaApiClient.getPullRequestDiff("testowner", "testrepo", 1L, null))
                 .thenReturn("new diff content");
-        when(anthropicClient.chat(anyList(), anyString(), eq("test prompt"), isNull()))
+        when(aiClient.chat(anyList(), anyString(), eq("test prompt"), isNull()))
                 .thenReturn("Updated review");
 
         codeReviewService.reviewPullRequest(payload, null);
 
-        verify(anthropicClient).chat(anyList(), anyString(), eq("test prompt"), isNull());
-        verify(anthropicClient, never()).reviewDiff(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(aiClient).chat(anyList(), anyString(), eq("test prompt"), isNull());
+        verify(aiClient, never()).reviewDiff(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
     void handleBotCommand_addsReactionAndResponds() {
-        WebhookPayload payload = createCommentPayload("@claude_bot explain this");
+        WebhookPayload payload = createCommentPayload("@ai_bot explain this");
         ReviewSession session = new ReviewSession("testowner", "testrepo", 1L, null);
         session.addMessage("user", "Initial context");
         session.addMessage("assistant", "Initial review");
@@ -154,11 +154,11 @@ class CodeReviewServiceTest {
         when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
         when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, null)).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
-        when(sessionService.toAnthropicMessages(session)).thenReturn(List.of(
-                AnthropicRequest.Message.builder().role("user").content("Initial context").build(),
-                AnthropicRequest.Message.builder().role("assistant").content("Initial review").build()
+        when(sessionService.toAiMessages(session)).thenReturn(List.of(
+                AiMessage.builder().role("user").content("Initial context").build(),
+                AiMessage.builder().role("assistant").content("Initial review").build()
         ));
-        when(anthropicClient.chat(anyList(), eq("@claude_bot explain this"), eq("test prompt"), isNull()))
+        when(aiClient.chat(anyList(), eq("@ai_bot explain this"), eq("test prompt"), isNull()))
                 .thenReturn("Here's my explanation");
 
         codeReviewService.handleBotCommand(payload, null);
@@ -181,7 +181,7 @@ class CodeReviewServiceTest {
         String result = codeReviewService.formatReviewComment("some review text");
         assertTrue(result.contains("🤖 AI Code Review"));
         assertTrue(result.contains("some review text"));
-        assertTrue(result.contains("Automated review by Anthropic Gitea Bot"));
+        assertTrue(result.contains("Automated review by AI Gitea Bot"));
     }
 
     @Test
@@ -189,13 +189,13 @@ class CodeReviewServiceTest {
         String result = codeReviewService.formatBotResponse("some response");
         assertTrue(result.contains("🤖 Bot Response"));
         assertTrue(result.contains("some response"));
-        assertTrue(result.contains("Response by Anthropic Gitea Bot"));
+        assertTrue(result.contains("Response by AI Gitea Bot"));
     }
 
     @Test
     void handleInlineComment_postsInlineReviewComment() {
         WebhookPayload payload = createInlineCommentPayload(
-                "@claude_bot explain this", "src/main/java/Foo.java",
+                "@ai_bot explain this", "src/main/java/Foo.java",
                 "@@ -10,7 +10,7 @@\n code context", 15);
         ReviewSession session = new ReviewSession("testowner", "testrepo", 1L, null);
         session.addMessage("user", "Initial context");
@@ -206,11 +206,11 @@ class CodeReviewServiceTest {
         when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
         when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, null)).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
-        when(sessionService.toAnthropicMessages(session)).thenReturn(List.of(
-                AnthropicRequest.Message.builder().role("user").content("Initial context").build(),
-                AnthropicRequest.Message.builder().role("assistant").content("Initial review").build()
+        when(sessionService.toAiMessages(session)).thenReturn(List.of(
+                AiMessage.builder().role("user").content("Initial context").build(),
+                AiMessage.builder().role("assistant").content("Initial review").build()
         ));
-        when(anthropicClient.chat(anyList(), contains("src/main/java/Foo.java"), eq("test prompt"), isNull()))
+        when(aiClient.chat(anyList(), contains("src/main/java/Foo.java"), eq("test prompt"), isNull()))
                 .thenReturn("Here's the explanation");
 
         codeReviewService.handleInlineComment(payload, null);
@@ -225,7 +225,7 @@ class CodeReviewServiceTest {
     @Test
     void handleInlineComment_fallsBackToRegularComment_whenNoLine() {
         WebhookPayload payload = createInlineCommentPayload(
-                "@claude_bot explain this", "src/main/java/Foo.java",
+                "@ai_bot explain this", "src/main/java/Foo.java",
                 "@@ -10,7 +10,7 @@\n code context", null);
         ReviewSession session = new ReviewSession("testowner", "testrepo", 1L, null);
         session.addMessage("user", "Initial context");
@@ -236,11 +236,11 @@ class CodeReviewServiceTest {
         when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
         when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, null)).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
-        when(sessionService.toAnthropicMessages(session)).thenReturn(List.of(
-                AnthropicRequest.Message.builder().role("user").content("Initial context").build(),
-                AnthropicRequest.Message.builder().role("assistant").content("Initial review").build()
+        when(sessionService.toAiMessages(session)).thenReturn(List.of(
+                AiMessage.builder().role("user").content("Initial context").build(),
+                AiMessage.builder().role("assistant").content("Initial review").build()
         ));
-        when(anthropicClient.chat(anyList(), anyString(), eq("test prompt"), isNull()))
+        when(aiClient.chat(anyList(), anyString(), eq("test prompt"), isNull()))
                 .thenReturn("Explanation without line");
 
         codeReviewService.handleInlineComment(payload, null);
@@ -254,19 +254,19 @@ class CodeReviewServiceTest {
     @Test
     void buildInlineCommentContext_includesFileAndDiffHunk() {
         String result = codeReviewService.buildInlineCommentContext(
-                "src/Main.java", "@@ -1,5 +1,5 @@\n code", "@claude_bot explain this");
+                "src/Main.java", "@@ -1,5 +1,5 @@\n code", "@ai_bot explain this");
         assertTrue(result.contains("src/Main.java"));
         assertTrue(result.contains("@@ -1,5 +1,5 @@"));
-        assertTrue(result.contains("@claude_bot explain this"));
+        assertTrue(result.contains("@ai_bot explain this"));
     }
 
     @Test
     void buildInlineCommentContext_withoutDiffHunk() {
         String result = codeReviewService.buildInlineCommentContext(
-                "src/Main.java", null, "@claude_bot what is this?");
+                "src/Main.java", null, "@ai_bot what is this?");
         assertTrue(result.contains("src/Main.java"));
         assertFalse(result.contains("diff hunk"));
-        assertTrue(result.contains("@claude_bot what is this?"));
+        assertTrue(result.contains("@ai_bot what is this?"));
     }
 
     @Test
@@ -293,15 +293,16 @@ class CodeReviewServiceTest {
         session.addMessage("user", "Initial context");
         session.addMessage("assistant", "Initial review");
 
-        when(botConfig.getAlias()).thenReturn("@claude_bot");
+        when(botConfig.getAlias()).thenReturn("@ai_bot");
+        when(botConfig.getUsername()).thenReturn("ai_bot");
         when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
         when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
         when(sessionService.getOrCreateSession("testowner", "testrepo", 2L, null)).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
-        when(sessionService.toAnthropicMessages(session)).thenReturn(List.of(
-                AnthropicRequest.Message.builder().role("user").content("Initial context").build(),
-                AnthropicRequest.Message.builder().role("assistant").content("Initial review").build()
+        when(sessionService.toAiMessages(session)).thenReturn(List.of(
+                AiMessage.builder().role("user").content("Initial context").build(),
+                AiMessage.builder().role("assistant").content("Initial review").build()
         ));
 
         // Set up review fetching
@@ -314,7 +315,7 @@ class CodeReviewServiceTest {
         // Set up review comments - one with bot mention, one without
         GiteaReviewComment botComment = new GiteaReviewComment();
         botComment.setId(100L);
-        botComment.setBody("@claude_bot explain this");
+        botComment.setBody("@ai_bot explain this");
         botComment.setPath("src/main/java/Foo.java");
         botComment.setDiffHunk("@@ -10,7 +10,7 @@\n code");
         botComment.setLine(15);
@@ -328,7 +329,7 @@ class CodeReviewServiceTest {
         when(giteaApiClient.getReviewComments("testowner", "testrepo", 2L, 10L, null))
                 .thenReturn(List.of(botComment, normalComment));
 
-        when(anthropicClient.chat(anyList(), contains("src/main/java/Foo.java"), eq("test prompt"), isNull()))
+        when(aiClient.chat(anyList(), contains("src/main/java/Foo.java"), eq("test prompt"), isNull()))
                 .thenReturn("Here's the explanation");
 
         codeReviewService.handleReviewSubmitted(payload, null);
@@ -354,14 +355,15 @@ class CodeReviewServiceTest {
 
         codeReviewService.handleReviewSubmitted(payload, null);
 
-        verify(anthropicClient, never()).chat(anyList(), anyString(), anyString(), anyString());
+        verify(aiClient, never()).chat(anyList(), anyString(), anyString(), anyString());
     }
 
     @Test
     void handleReviewSubmitted_noBotMentions_doesNothing() {
         WebhookPayload payload = createReviewSubmittedPayload();
 
-        when(botConfig.getAlias()).thenReturn("@claude_bot");
+        when(botConfig.getAlias()).thenReturn("@ai_bot");
+        when(botConfig.getUsername()).thenReturn("ai_bot");
         when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
         when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
@@ -379,7 +381,42 @@ class CodeReviewServiceTest {
 
         codeReviewService.handleReviewSubmitted(payload, null);
 
-        verify(anthropicClient, never()).chat(anyList(), anyString(), anyString(), anyString());
+        verify(aiClient, never()).chat(anyList(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void handleReviewSubmitted_botOwnComments_filtered() {
+        WebhookPayload payload = createReviewSubmittedPayload();
+
+        when(botConfig.getAlias()).thenReturn("@ai_bot");
+        when(botConfig.getUsername()).thenReturn("ai_bot");
+        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
+        when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
+        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
+
+        GiteaReview review = new GiteaReview();
+        review.setId(10L);
+        when(giteaApiClient.getReviews("testowner", "testrepo", 2L, null))
+                .thenReturn(List.of(review));
+
+        // Bot's own comment that mentions itself (e.g. from its formatted response)
+        GiteaReviewComment botOwnComment = new GiteaReviewComment();
+        botOwnComment.setId(200L);
+        botOwnComment.setBody("## 🤖 Bot Response\n\nSome answer mentioning @ai_bot");
+        botOwnComment.setPath("src/main/java/Foo.java");
+        botOwnComment.setLine(10);
+        GiteaReview.GiteaUser botUser = new GiteaReview.GiteaUser();
+        botUser.setLogin("ai_bot");
+        botOwnComment.setUser(botUser);
+
+        when(giteaApiClient.getReviewComments("testowner", "testrepo", 2L, 10L, null))
+                .thenReturn(List.of(botOwnComment));
+
+        codeReviewService.handleReviewSubmitted(payload, null);
+
+        // Bot's own comment should be filtered out — no AI call, no reaction
+        verify(aiClient, never()).chat(anyList(), anyString(), anyString(), anyString());
+        verify(giteaApiClient, never()).addReaction(anyString(), anyString(), anyLong(), anyString(), anyString());
     }
 
     private WebhookPayload createTestPayload() {

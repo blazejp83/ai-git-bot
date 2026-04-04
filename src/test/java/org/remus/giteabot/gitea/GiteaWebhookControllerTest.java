@@ -104,14 +104,14 @@ class GiteaWebhookControllerTest {
 
     @Test
     void handleWebhook_commentWithBotMention_triggersCommand() throws Exception {
-        when(botConfigProperties.getAlias()).thenReturn("@claude_bot");
+        when(botConfigProperties.getAlias()).thenReturn("@ai_bot");
 
         String payload = """
                 {
                     "action": "created",
                     "comment": {
                         "id": 42,
-                        "body": "@claude_bot please explain this code",
+                        "body": "@ai_bot please explain this code",
                         "user": {"login": "testuser"}
                     },
                     "issue": {
@@ -138,7 +138,7 @@ class GiteaWebhookControllerTest {
 
     @Test
     void handleWebhook_commentWithoutBotMention_ignored() throws Exception {
-        when(botConfigProperties.getAlias()).thenReturn("@claude_bot");
+        when(botConfigProperties.getAlias()).thenReturn("@ai_bot");
 
         String payload = """
                 {
@@ -172,14 +172,14 @@ class GiteaWebhookControllerTest {
 
     @Test
     void handleWebhook_commentOnNonPrIssue_ignored() throws Exception {
-        when(botConfigProperties.getAlias()).thenReturn("@claude_bot");
+        when(botConfigProperties.getAlias()).thenReturn("@ai_bot");
 
         String payload = """
                 {
                     "action": "created",
                     "comment": {
                         "id": 42,
-                        "body": "@claude_bot help",
+                        "body": "@ai_bot help",
                         "user": {"login": "testuser"}
                     },
                     "issue": {
@@ -205,14 +205,14 @@ class GiteaWebhookControllerTest {
 
     @Test
     void handleWebhook_inlineCommentWithBotMention_triggersInlineHandler() throws Exception {
-        when(botConfigProperties.getAlias()).thenReturn("@claude_bot");
+        when(botConfigProperties.getAlias()).thenReturn("@ai_bot");
 
         String payload = """
                 {
                     "action": "created",
                     "comment": {
                         "id": 55,
-                        "body": "@claude_bot explain this code",
+                        "body": "@ai_bot explain this code",
                         "user": {"login": "testuser"},
                         "path": "src/main/java/Foo.java",
                         "diff_hunk": "@@ -10,7 +10,7 @@\\n some code context",
@@ -243,7 +243,7 @@ class GiteaWebhookControllerTest {
 
     @Test
     void handleWebhook_inlineCommentWithoutBotMention_ignored() throws Exception {
-        when(botConfigProperties.getAlias()).thenReturn("@claude_bot");
+        when(botConfigProperties.getAlias()).thenReturn("@ai_bot");
 
         String payload = """
                 {
@@ -279,14 +279,14 @@ class GiteaWebhookControllerTest {
 
     @Test
     void handleWebhook_inlineCommentViaPullRequest_triggersInlineHandler() throws Exception {
-        when(botConfigProperties.getAlias()).thenReturn("@claude_bot");
+        when(botConfigProperties.getAlias()).thenReturn("@ai_bot");
 
         String payload = """
                 {
                     "action": "created",
                     "comment": {
                         "id": 56,
-                        "body": "@claude_bot what does this do?",
+                        "body": "@ai_bot what does this do?",
                         "user": {"login": "testuser"},
                         "path": "src/main/java/Bar.java",
                         "diff_hunk": "@@ -1,5 +1,5 @@\\n code",
@@ -383,6 +383,116 @@ class GiteaWebhookControllerTest {
                 .andExpect(content().string("review comments processing triggered"));
 
         verify(codeReviewService).handleReviewSubmitted(any(WebhookPayload.class), eq("security"));
+    }
+
+    @Test
+    void handleWebhook_botSender_ignored() throws Exception {
+        when(botConfigProperties.getUsername()).thenReturn("ai_bot");
+
+        String payload = """
+                {
+                    "action": "created",
+                    "comment": {
+                        "id": 99,
+                        "body": "@ai_bot this is the bot's own comment",
+                        "user": {"login": "ai_bot"}
+                    },
+                    "issue": {
+                        "number": 1,
+                        "title": "Test PR",
+                        "pull_request": {}
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    },
+                    "sender": {
+                        "login": "ai_bot"
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("ignored"));
+
+        verify(codeReviewService, never()).handleBotCommand(any(), any());
+        verify(codeReviewService, never()).reviewPullRequest(any(), any());
+    }
+
+    @Test
+    void handleWebhook_botSenderOnPrOpened_ignored() throws Exception {
+        when(botConfigProperties.getUsername()).thenReturn("ai_bot");
+
+        String payload = """
+                {
+                    "action": "opened",
+                    "pull_request": {
+                        "number": 1,
+                        "title": "Test PR"
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    },
+                    "sender": {
+                        "login": "ai_bot"
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("ignored"));
+
+        verify(codeReviewService, never()).reviewPullRequest(any(), any());
+    }
+
+    @Test
+    void handleWebhook_botCommentUser_ignored() throws Exception {
+        when(botConfigProperties.getUsername()).thenReturn("ai_bot");
+        when(botConfigProperties.getAlias()).thenReturn("@ai_bot");
+
+        String payload = """
+                {
+                    "action": "created",
+                    "comment": {
+                        "id": 100,
+                        "body": "## 🤖 Bot Response with @ai_bot mention",
+                        "user": {"login": "ai_bot"},
+                        "path": "src/Foo.java",
+                        "line": 10
+                    },
+                    "issue": {
+                        "number": 1,
+                        "title": "Test PR",
+                        "pull_request": {}
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    },
+                    "sender": {
+                        "login": "ai_bot"
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("ignored"));
+
+        verify(codeReviewService, never()).handleInlineComment(any(), any());
+        verify(codeReviewService, never()).handleBotCommand(any(), any());
     }
 
     private WebhookPayload createTestPayload(String action) {
