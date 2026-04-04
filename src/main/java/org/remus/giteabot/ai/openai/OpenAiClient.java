@@ -55,9 +55,6 @@ public class OpenAiClient extends AbstractAiClient {
     @Override
     protected boolean isPromptTooLongError(HttpClientErrorException e) {
         String body = e.getResponseBodyAsString();
-        if (body == null) {
-            return false;
-        }
         String normalized = body.toLowerCase(Locale.ROOT);
         return normalized.contains("maximum context length")
                 || normalized.contains("too many tokens")
