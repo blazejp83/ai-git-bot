@@ -84,8 +84,15 @@ public class OpenAiClient extends AbstractAiClient {
             return "Unable to generate " + context + " - empty response from AI.";
         }
 
-        String result = response.getChoices().getFirst().getMessage().getContent();
+        OpenAiResponse.Choice firstChoice = response.getChoices().getFirst();
+        if (firstChoice == null
+                || firstChoice.getMessage() == null
+                || firstChoice.getMessage().getContent() == null) {
+            log.warn("Empty response from OpenAI API");
+            return "Unable to generate " + context + " - empty response from AI.";
+        }
 
+        String result = firstChoice.getMessage().getContent();
         if (response.getUsage() != null) {
             log.info("OpenAI {} response: {} prompt tokens, {} completion tokens",
                     context,
