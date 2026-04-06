@@ -1,6 +1,8 @@
 package org.remus.giteabot.gitea;
 
 import lombok.extern.slf4j.Slf4j;
+import org.remus.giteabot.agent.IssueImplementationService;
+import org.remus.giteabot.config.AgentConfigProperties;
 import org.remus.giteabot.config.BotConfigProperties;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 import org.remus.giteabot.review.CodeReviewService;
@@ -13,11 +15,18 @@ import org.springframework.web.bind.annotation.*;
 public class GiteaWebhookController {
 
     private final CodeReviewService codeReviewService;
+    private final IssueImplementationService issueImplementationService;
     private final BotConfigProperties botConfig;
+    private final AgentConfigProperties agentConfig;
 
-    public GiteaWebhookController(CodeReviewService codeReviewService, BotConfigProperties botConfig) {
+    public GiteaWebhookController(CodeReviewService codeReviewService,
+                                  IssueImplementationService issueImplementationService,
+                                  BotConfigProperties botConfig,
+                                  AgentConfigProperties agentConfig) {
         this.codeReviewService = codeReviewService;
+        this.issueImplementationService = issueImplementationService;
         this.botConfig = botConfig;
+        this.agentConfig = agentConfig;
     }
 
     @PostMapping
@@ -27,6 +36,12 @@ public class GiteaWebhookController {
         if (isBotUser(payload)) {
             log.debug("Ignoring webhook event from bot user '{}'", botConfig.getUsername());
             return ResponseEntity.ok("ignored");
+        }
+
+        // Handle issue assignment events (agent feature)
+        if ("assigned".equals(payload.getAction()) && payload.getIssue() != null
+                && payload.getPullRequest() == null && payload.getComment() == null) {
+            return handleIssueAssigned(payload);
         }
 
         // Handle inline review comments (bot mention in code-level review comments)
@@ -151,6 +166,41 @@ public class GiteaWebhookController {
         codeReviewService.handleBotCommand(payload, promptName);
 
         return ResponseEntity.ok("command received");
+    }
+
+    private ResponseEntity<String> handleIssueAssigned(WebhookPayload payload) {
+        if (!agentConfig.isEnabled()) {
+            log.debug("Agent feature is disabled, ignoring issue assignment");
+            return ResponseEntity.ok("ignored");
+        }
+
+        // Check if the assignee is the bot
+        if (payload.getAssignee() == null
+                || !botConfig.getUsername().equalsIgnoreCase(payload.getAssignee().getLogin())) {
+            log.debug("Issue not assigned to bot, ignoring");
+            return ResponseEntity.ok("ignored");
+        }
+
+        // Check if repo is in the allowed list (if configured)
+        String repoFullName = payload.getRepository().getFullName();
+        if (!agentConfig.getAllowedRepos().isEmpty()
+                && !agentConfig.getAllowedRepos().contains(repoFullName)) {
+            log.info("Repository {} is not in the agent's allowed repos list, ignoring", repoFullName);
+            return ResponseEntity.ok("ignored");
+        }
+
+        // Ignore issues that are actually PRs
+        if (payload.getIssue().getPullRequest() != null) {
+            log.debug("Ignoring assignment on PR issue");
+            return ResponseEntity.ok("ignored");
+        }
+
+        log.info("Issue #{} in {} assigned to bot, triggering implementation agent",
+                payload.getIssue().getNumber(), repoFullName);
+
+        issueImplementationService.handleIssueAssigned(payload);
+
+        return ResponseEntity.ok("agent triggered");
     }
 
     /**
