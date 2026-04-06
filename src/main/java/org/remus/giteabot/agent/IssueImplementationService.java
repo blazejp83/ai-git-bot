@@ -2,14 +2,13 @@ package org.remus.giteabot.agent;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.remus.giteabot.agent.model.FileChange;
 import org.remus.giteabot.agent.model.ImplementationPlan;
 import org.remus.giteabot.agent.session.AgentSession;
 import org.remus.giteabot.agent.session.AgentSessionService;
-import org.remus.giteabot.agent.validation.BuildValidationService;
-import org.remus.giteabot.agent.validation.CodeValidationService;
-import org.remus.giteabot.agent.validation.SyntaxValidator;
+import org.remus.giteabot.agent.validation.ToolExecutionService;
 import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.ai.AiMessage;
 import org.remus.giteabot.config.AgentConfigProperties;
@@ -21,6 +20,7 @@ import org.springframework.stereotype.Service;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -45,24 +45,21 @@ public class IssueImplementationService {
     private final PromptService promptService;
     private final AgentConfigProperties agentConfig;
     private final AgentSessionService sessionService;
-    private final CodeValidationService validationService;
-    private final BuildValidationService buildValidationService;
+    private final ToolExecutionService toolExecutionService;
     private final DiffApplyService diffApplyService;
     private final ObjectMapper objectMapper;
 
     public IssueImplementationService(GiteaApiClient giteaApiClient,
                                       AiClient aiClient, PromptService promptService,
                                       AgentConfigProperties agentConfig, AgentSessionService sessionService,
-                                      CodeValidationService validationService,
-                                      BuildValidationService buildValidationService,
+                                      ToolExecutionService toolExecutionService,
                                       DiffApplyService diffApplyService) {
         this.giteaApiClient = giteaApiClient;
         this.aiClient = aiClient;
         this.promptService = promptService;
         this.agentConfig = agentConfig;
         this.sessionService = sessionService;
-        this.validationService = validationService;
-        this.buildValidationService = buildValidationService;
+        this.toolExecutionService = toolExecutionService;
         this.diffApplyService = diffApplyService;
         this.objectMapper = new ObjectMapper();
     }
@@ -75,6 +72,7 @@ public class IssueImplementationService {
         Long issueNumber = payload.getIssue().getNumber();
         String issueTitle = payload.getIssue().getTitle();
         String issueBody = payload.getIssue().getBody();
+        String issueRef = payload.getIssue().getRef();
 
         log.info("Starting implementation for issue #{} '{}' in {}", issueNumber, issueTitle, repoFullName);
 
@@ -95,12 +93,18 @@ public class IssueImplementationService {
                     "🤖 **AI Agent**: I've been assigned to this issue. Analyzing repository structure...",
                     null);
 
-            // Get default branch
-            String defaultBranch = giteaApiClient.getDefaultBranch(owner, repo, null);
-            log.info("Default branch for {}: {}", repoFullName, defaultBranch);
+            // Determine base branch: use issue ref if set, otherwise default branch
+            String baseBranch;
+            if (issueRef != null && !issueRef.isBlank()) {
+                baseBranch = issueRef;
+                log.info("Using issue branch '{}' as base for issue #{}", baseBranch, issueNumber);
+            } else {
+                baseBranch = giteaApiClient.getDefaultBranch(owner, repo, null);
+                log.info("No issue branch set, using default branch '{}' for issue #{}", baseBranch, issueNumber);
+            }
 
             // Fetch repository tree
-            List<Map<String, Object>> tree = giteaApiClient.getRepositoryTree(owner, repo, defaultBranch, null);
+            List<Map<String, Object>> tree = giteaApiClient.getRepositoryTree(owner, repo, baseBranch, null);
             String treeContext = buildTreeContext(tree);
 
             // Get system prompt for agent
@@ -120,7 +124,7 @@ public class IssueImplementationService {
             log.info("AI requested {} files for context", requestedFiles.size());
 
             // Fetch requested file contents
-            String fileContext = fetchSpecificFiles(owner, repo, defaultBranch, requestedFiles);
+            String fileContext = fetchSpecificFiles(owner, repo, baseBranch, requestedFiles);
 
             // STEP 2: Generate implementation with file context
             log.info("Step 2: Generating implementation for issue #{}", issueNumber);
@@ -128,7 +132,7 @@ public class IssueImplementationService {
 
             // Generate implementation with validation and iterative correction
             ImplementationPlan plan = generateValidatedImplementation(
-                    session, implementationPrompt, systemPrompt, owner, repo, issueNumber, defaultBranch);
+                    session, implementationPrompt, systemPrompt, owner, repo, issueNumber, baseBranch);
 
             if (plan == null || plan.getFileChanges() == null || plan.getFileChanges().isEmpty()) {
                 sessionService.setStatus(session, AgentSession.AgentSessionStatus.FAILED);
@@ -155,26 +159,26 @@ public class IssueImplementationService {
             branchName = agentConfig.getBranchPrefix() + "issue-" + issueNumber;
             sessionService.setBranchName(session, branchName);
 
-            // Create feature branch
-            giteaApiClient.createBranch(owner, repo, branchName, defaultBranch, null);
-            log.info("Created branch '{}' for issue #{}", branchName, issueNumber);
+            // Create feature branch from base branch
+            giteaApiClient.createBranch(owner, repo, branchName, baseBranch, null);
+            log.info("Created branch '{}' from '{}' for issue #{}", branchName, baseBranch, issueNumber);
 
             // Commit file changes and track them in the session
             for (FileChange change : plan.getFileChanges()) {
                 String commitMessage = String.format("agent: %s %s (issue #%d)",
                         change.getOperation().name().toLowerCase(), change.getPath(), issueNumber);
 
-                applyFileChange(owner, repo, branchName, change, commitMessage);
+                applyFileChange(owner, repo, branchName, change, commitMessage, session);
 
                 // Record file change in session
                 sessionService.addFileChange(session, change.getPath(), change.getOperation().name(), null);
             }
 
-            // Create pull request
+            // Create pull request targeting the base branch
             String prTitle = String.format("AI Agent: %s (fixes #%d)", issueTitle, issueNumber);
             String prBody = buildPrBody(issueNumber, plan);
             Long prNumber = giteaApiClient.createPullRequest(owner, repo, prTitle, prBody,
-                    branchName, defaultBranch, null);
+                    branchName, baseBranch, null);
 
             // Update session with PR number
             sessionService.setPrNumber(session, prNumber);
@@ -223,10 +227,8 @@ public class IssueImplementationService {
     }
 
     /**
-     * Generates implementation with validation and iterative correction.
-     * If the generated code has syntax errors and validation is enabled,
-     * the errors are sent back to the AI for correction.
-     * If the AI requests more files, they are fetched and the conversation continues.
+     * Generates implementation with AI-driven validation using external tools.
+     * The AI decides which tools to run for validation and can iterate on errors.
      *
      * @return a valid ImplementationPlan, or null if generation/validation failed
      */
@@ -237,7 +239,13 @@ public class IssueImplementationService {
         int maxRetries = agentConfig.getValidation().isEnabled()
                 ? agentConfig.getValidation().getMaxRetries()
                 : 1;
-        int maxFileRequestRounds = 3; // Prevent infinite loops of file requests
+        int maxFileRequestRounds = 3;
+        int maxToolExecutions = agentConfig.getValidation().getMaxToolExecutions();
+
+        // Add available tools info to the initial message
+        List<String> availableTools = toolExecutionService.getAvailableTools();
+        String toolsInfo = "\n\n**Available validation tools**: " + String.join(", ", availableTools);
+        userMessage = userMessage + toolsInfo;
 
         // Store initial user message in session
         sessionService.addMessage(session, "user", userMessage);
@@ -245,149 +253,421 @@ public class IssueImplementationService {
         String currentMessage = userMessage;
         List<AiMessage> conversationHistory = new ArrayList<>();
         int fileRequestRounds = 0;
+        int toolExecutions = 0;
+        Path workspaceDir = null;
+        ImplementationPlan lastValidPlan = null;
 
-        for (int attempt = 1; attempt <= maxRetries; attempt++) {
-            log.info("Generating implementation for issue #{}, attempt {}/{}", issueNumber, attempt, maxRetries);
+        try {
+            for (int attempt = 1; attempt <= maxRetries; attempt++) {
+                log.info("Generating implementation for issue #{}, attempt {}/{}", issueNumber, attempt, maxRetries);
 
-            // Call AI to generate implementation
-            String aiResponse = aiClient.chat(conversationHistory, currentMessage, systemPrompt, null,
-                    agentConfig.getMaxTokens());
+                // Call AI to generate implementation
+                String aiResponse = aiClient.chat(conversationHistory, currentMessage, systemPrompt, null,
+                        agentConfig.getMaxTokens());
 
-            // Store AI response in session
-            sessionService.addMessage(session, "assistant", aiResponse);
+                // Store AI response in session
+                sessionService.addMessage(session, "assistant", aiResponse);
 
-            // Post the AI's reasoning as a comment (excluding JSON)
-            postAiThinkingComment(owner, repo, issueNumber, aiResponse);
+                // Post the AI's reasoning as a comment (excluding JSON)
+                postAiThinkingComment(owner, repo, issueNumber, aiResponse);
 
-            // Parse AI response
-            ImplementationPlan plan = parseAiResponse(aiResponse);
-            if (plan == null) {
-                log.warn("Failed to parse implementation plan on attempt {}", attempt);
-                return null;
-            }
-
-            // Handle file requests - AI wants to see more files before implementing
-            if (plan.hasFileRequests() && !plan.hasFileChanges() && fileRequestRounds < maxFileRequestRounds) {
-                fileRequestRounds++;
-                log.info("AI requesting {} additional files (round {}/{})",
-                        plan.getRequestFiles().size(), fileRequestRounds, maxFileRequestRounds);
-
-                // Fetch the requested files
-                String fileContext = fetchSpecificFiles(owner, repo, defaultBranch, plan.getRequestFiles());
-
-                // Build continuation message
-                String filesMessage = "Here are the requested files:\n" + fileContext +
-                        "\n\nNow implement the issue. Output JSON with fileChanges.";
-
-                // Update conversation history for next iteration
-                conversationHistory.add(AiMessage.builder()
-                        .role("user")
-                        .content(currentMessage)
-                        .build());
-                conversationHistory.add(AiMessage.builder()
-                        .role("assistant")
-                        .content(aiResponse)
-                        .build());
-
-                currentMessage = filesMessage;
-                sessionService.addMessage(session, "user", filesMessage);
-
-                // Don't count this as an attempt since it's a file request, not a failed implementation
-                attempt--;
-                continue;
-            }
-
-            // If still no file changes after handling file requests, fail
-            if (!plan.hasFileChanges()) {
-                log.warn("No file changes in implementation plan on attempt {}", attempt);
-                return null;
-            }
-
-            // If validation is disabled, return the plan as-is
-            if (!agentConfig.getValidation().isEnabled()) {
-                return plan;
-            }
-
-            // VALIDATION: Try build validation first, fall back to syntax validation
-            String validationErrors = null;
-
-            if (agentConfig.getValidation().isBuildEnabled()) {
-                // Build validation - catches more errors
-                BuildValidationService.BuildResult buildResult = buildValidationService.validateWithBuild(
-                        owner, repo, defaultBranch, plan.getFileChanges());
-
-                if (!buildResult.success()) {
-                    validationErrors = buildResult.getErrorSummary();
-                    log.info("Build validation failed on attempt {}: {}", attempt, buildResult.message());
-                }
-            } else {
-                // Syntax validation only
-                List<SyntaxValidator.ValidationError> errors = validationService.validateAll(plan.getFileChanges());
-                if (!errors.isEmpty()) {
-                    validationErrors = validationService.buildErrorReport(errors);
-                    log.info("Syntax validation found {} error(s) on attempt {}/{}", errors.size(), attempt, maxRetries);
-                }
-            }
-
-            if (validationErrors == null) {
-                log.info("Generated code passed validation on attempt {}", attempt);
-                return plan;
-            }
-
-            // If this was the last attempt, post a warning but still return the plan
-            if (attempt >= maxRetries) {
-                log.warn("Max validation retries reached, proceeding with code that has errors");
-
-                // Notify user about validation issues
-                String warningComment = String.format(
-                        "⚠️ **AI Agent**: The generated code has errors that couldn't be " +
-                        "automatically fixed after %d attempt(s).\n\n" +
-                        "```\n%s\n```\n" +
-                        "The code will still be committed for review, but may require manual fixes.",
-                        maxRetries, validationErrors.length() > 2000
-                                ? validationErrors.substring(0, 2000) + "..."
-                                : validationErrors);
-
-                try {
-                    giteaApiClient.postComment(owner, repo, issueNumber, warningComment, null);
-                } catch (Exception e) {
-                    log.warn("Failed to post validation warning: {}", e.getMessage());
+                // Parse AI response
+                ImplementationPlan plan = parseAiResponse(aiResponse);
+                if (plan == null) {
+                    log.warn("Failed to parse implementation plan on attempt {}", attempt);
+                    return lastValidPlan;
                 }
 
-                return plan;
+                // Handle file requests - AI wants to see more files before implementing
+                if (plan.hasFileRequests() && !plan.hasFileChanges() && fileRequestRounds < maxFileRequestRounds) {
+                    fileRequestRounds++;
+                    log.info("AI requesting {} additional files (round {}/{})",
+                            plan.getRequestFiles().size(), fileRequestRounds, maxFileRequestRounds);
+
+                    String fileContext = fetchSpecificFiles(owner, repo, defaultBranch, plan.getRequestFiles());
+                    String filesMessage = "Here are the requested files:\n" + fileContext +
+                            "\n\nNow implement the issue. Output JSON with fileChanges and runTool for validation.";
+
+                    conversationHistory.add(AiMessage.builder().role("user").content(currentMessage).build());
+                    conversationHistory.add(AiMessage.builder().role("assistant").content(aiResponse).build());
+
+                    currentMessage = filesMessage;
+                    sessionService.addMessage(session, "user", filesMessage);
+                    attempt--;
+                    continue;
+                }
+
+                // If we have file changes, save them as the last valid plan
+                if (plan.hasFileChanges()) {
+                    lastValidPlan = plan;
+                }
+
+                // If no file changes and no tool request, fail
+                if (!plan.hasFileChanges() && !plan.hasToolRequest()) {
+                    log.warn("No file changes in implementation plan on attempt {}", attempt);
+                    return lastValidPlan;
+                }
+
+                // If validation is disabled, return the plan as-is
+                if (!agentConfig.getValidation().isEnabled()) {
+                    return plan;
+                }
+
+                // Handle tool execution for AI-driven validation
+                if (plan.hasToolRequest() && plan.hasFileChanges() && toolExecutions < maxToolExecutions) {
+                    toolExecutions++;
+
+                    // Prepare workspace if not already done
+                    if (workspaceDir == null) {
+                        ToolExecutionService.WorkspaceResult workspaceResult = toolExecutionService.prepareWorkspace(owner, repo, defaultBranch, plan.getFileChanges());
+                        if (!workspaceResult.success()) {
+                            log.error("Failed to prepare workspace for validation: {}", workspaceResult.error());
+                            // Post error as comment so it's visible
+                            giteaApiClient.postComment(owner, repo, issueNumber,
+                                    "⚠️ **Workspace preparation failed**\n\n" + workspaceResult.error(), null);
+                            return plan; // Return plan without validation
+                        }
+                        workspaceDir = workspaceResult.workspacePath();
+                    } else {
+                        // Update existing workspace with new file changes
+                        for (FileChange change : plan.getFileChanges()) {
+                            Path filePath = workspaceDir.resolve(change.getPath());
+                            try {
+                                switch (change.getOperation()) {
+                                    case CREATE, UPDATE -> {
+                                        java.nio.file.Files.createDirectories(filePath.getParent());
+                                        java.nio.file.Files.writeString(filePath, change.getContent());
+                                    }
+                                    case DELETE -> java.nio.file.Files.deleteIfExists(filePath);
+                                }
+                            } catch (Exception e) {
+                                log.warn("Failed to update workspace file {}: {}", change.getPath(), e.getMessage());
+                            }
+                        }
+                    }
+
+                    // Execute the tool
+                    ImplementationPlan.ToolRequest toolRequest = plan.getToolRequest();
+                    log.info("AI requested tool execution: {} {}", toolRequest.getTool(),
+                            toolRequest.getArgs() != null ? String.join(" ", toolRequest.getArgs()) : "");
+
+                    ToolExecutionService.ToolResult result = toolExecutionService.executeTool(
+                            workspaceDir, toolRequest.getTool(), toolRequest.getArgs());
+
+                    // Build feedback message for AI
+                    String toolFeedback = buildToolFeedback(toolRequest, result);
+
+                    // Post tool result as comment
+                    postToolResultComment(owner, repo, issueNumber, toolRequest, result);
+
+                    // If tool succeeded, we're done
+                    if (result.success()) {
+                        log.info("Validation tool succeeded on attempt {}", attempt);
+                        return plan;
+                    }
+
+                    // Tool failed - send feedback to AI for fixing
+                    // IMPORTANT: Include all previously successful file changes in the feedback
+                    // so the AI knows which changes to preserve when fixing
+                    String previousChangesInfo = buildPreviousChangesInfo(lastValidPlan);
+                    String toolFeedbackWithContext = toolFeedback + previousChangesInfo;
+
+                    conversationHistory.add(AiMessage.builder().role("user").content(currentMessage).build());
+                    conversationHistory.add(AiMessage.builder().role("assistant").content(aiResponse).build());
+
+                    currentMessage = toolFeedbackWithContext;
+                    sessionService.addMessage(session, "user", toolFeedbackWithContext);
+
+                    // Store reference to preserve changes from this iteration
+                    ImplementationPlan previousPlan = plan;
+
+                    // Get next response and parse it
+                    aiResponse = aiClient.chat(conversationHistory, currentMessage, systemPrompt, null,
+                            agentConfig.getMaxTokens());
+                    sessionService.addMessage(session, "assistant", aiResponse);
+                    postAiThinkingComment(owner, repo, issueNumber, aiResponse);
+
+                    plan = parseAiResponse(aiResponse);
+                    if (plan != null && plan.hasFileChanges()) {
+                        // Merge: If AI didn't include all previous files, add the missing ones
+                        plan = mergeFileChanges(previousPlan, plan);
+                        lastValidPlan = plan;
+                    } else if (lastValidPlan != null) {
+                        // AI couldn't provide fixes, return last valid plan
+                        return lastValidPlan;
+                    }
+                    continue;
+                }
+
+                // No tool request but has file changes - ask AI to provide a validation tool
+                if (plan.hasFileChanges() && !plan.hasToolRequest()) {
+                    log.info("AI provided file changes without runTool - requesting validation tool");
+
+                    String toolRequestMessage = buildMissingToolFeedback();
+
+                    conversationHistory.add(AiMessage.builder().role("user").content(currentMessage).build());
+                    conversationHistory.add(AiMessage.builder().role("assistant").content(aiResponse).build());
+
+                    currentMessage = toolRequestMessage;
+                    sessionService.addMessage(session, "user", toolRequestMessage);
+                    continue;
+                }
             }
 
-            // Build error feedback for the AI
-            String errorFeedback = buildValidationErrorFeedback(validationErrors);
+            return lastValidPlan;
 
-            // Update conversation for next iteration
-            conversationHistory.add(AiMessage.builder()
-                    .role("user")
-                    .content(currentMessage)
-                    .build());
-            conversationHistory.add(AiMessage.builder()
-                    .role("assistant")
-                    .content(aiResponse)
-                    .build());
+        } finally {
+            // Clean up workspace
+            if (workspaceDir != null) {
+                toolExecutionService.cleanupWorkspace(workspaceDir);
+            }
+        }
+    }
 
-            currentMessage = errorFeedback;
-            sessionService.addMessage(session, "user", errorFeedback);
+    private String buildToolFeedback(ImplementationPlan.ToolRequest toolRequest, ToolExecutionService.ToolResult result) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("## Tool Execution Result\n\n");
+        sb.append("**Command**: `").append(toolRequest.getTool());
+        if (toolRequest.getArgs() != null && !toolRequest.getArgs().isEmpty()) {
+            sb.append(" ").append(String.join(" ", toolRequest.getArgs()));
+        }
+        sb.append("`\n\n");
+
+        if (result.success()) {
+            sb.append("✅ **Success** (exit code 0)\n");
+        } else {
+            sb.append("❌ **Failed** (exit code ").append(result.exitCode()).append(")\n");
         }
 
-        return null;
+        sb.append("\n").append(result.formatForAi());
+
+        if (!result.success()) {
+            sb.append("\nFix the errors and provide updated `fileChanges`. ");
+            sb.append("Include `runTool` to validate again.");
+        }
+
+        return sb.toString();
+    }
+
+    private void postToolResultComment(String owner, String repo, Long issueNumber,
+                                       ImplementationPlan.ToolRequest toolRequest,
+                                       ToolExecutionService.ToolResult result) {
+        try {
+            StringBuilder comment = new StringBuilder();
+            comment.append("🔧 **Tool Execution**: `").append(toolRequest.getTool());
+            if (toolRequest.getArgs() != null && !toolRequest.getArgs().isEmpty()) {
+                comment.append(" ").append(String.join(" ", toolRequest.getArgs()));
+            }
+            comment.append("`\n\n");
+
+            if (result.success()) {
+                comment.append("✅ **Success**\n");
+            } else {
+                comment.append("❌ **Failed** (exit code ").append(result.exitCode()).append(")\n");
+                if (!result.output().isEmpty()) {
+                    String output = result.output();
+                    if (output.length() > 2000) {
+                        output = output.substring(0, 2000) + "\n... (truncated)";
+                    }
+                    comment.append("\n```\n").append(output).append("```\n");
+                }
+            }
+
+            giteaApiClient.postComment(owner, repo, issueNumber, comment.toString(), null);
+        } catch (Exception e) {
+            log.warn("Failed to post tool result comment: {}", e.getMessage());
+        }
+    }
+
+    private String buildMissingToolFeedback() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("## Missing Validation Tool\n\n");
+        sb.append("Your response included `fileChanges` but no `runTool` for validation.\n\n");
+        sb.append("**Validation is mandatory.** Please provide the same file changes again, ");
+        sb.append("but this time include a `runTool` to validate the code.\n\n");
+        sb.append("Detect the build system from the file tree and request the appropriate tool:\n");
+        sb.append("- Maven: `{\"tool\": \"mvn\", \"args\": [\"compile\", \"-q\", \"-B\"]}`\n");
+        sb.append("- Gradle: `{\"tool\": \"gradle\", \"args\": [\"compileJava\", \"-q\"]}`\n");
+        sb.append("- npm: `{\"tool\": \"npm\", \"args\": [\"run\", \"build\"]}`\n");
+        sb.append("- etc.\n\n");
+        sb.append("Output JSON with both `fileChanges` and `runTool`.");
+        return sb.toString();
     }
 
     /**
-     * Builds an error feedback message for the AI to fix validation errors.
+     * Merges file changes from two plans.
+     * If the new plan doesn't include a file from the previous plan, that file is preserved.
+     * If both plans have the same file, the new version takes precedence.
+     *
+     * @param previousPlan The previous plan with file changes
+     * @param newPlan      The new plan (may have fewer files if AI only fixed some)
+     * @return A merged plan with all file changes
      */
-    private String buildValidationErrorFeedback(String errors) {
-        return String.format("""
-                ## Validation Failed
-                ```
-                %s
-                ```
-                Fix the errors. Output corrected JSON with complete file contents.
-                """, errors);
+    private ImplementationPlan mergeFileChanges(ImplementationPlan previousPlan, ImplementationPlan newPlan) {
+        if (previousPlan == null || !previousPlan.hasFileChanges()) {
+            return newPlan;
+        }
+        if (newPlan == null || !newPlan.hasFileChanges()) {
+            return previousPlan;
+        }
+
+        // Build a map of file paths to changes from the new plan
+        Map<String, FileChange> newChangesMap = new java.util.HashMap<>();
+        for (FileChange fc : newPlan.getFileChanges()) {
+            newChangesMap.put(fc.getPath(), fc);
+        }
+
+        // Add missing files from previous plan
+        List<FileChange> mergedChanges = new ArrayList<>(newPlan.getFileChanges());
+        for (FileChange fc : previousPlan.getFileChanges()) {
+            if (!newChangesMap.containsKey(fc.getPath())) {
+                log.info("Preserving file change from previous plan: {}", fc.getPath());
+                mergedChanges.add(fc);
+            }
+        }
+
+        return ImplementationPlan.builder()
+                .summary(newPlan.getSummary() != null ? newPlan.getSummary() : previousPlan.getSummary())
+                .fileChanges(mergedChanges)
+                .toolRequest(newPlan.getToolRequest())
+                .requestFiles(newPlan.getRequestFiles())
+                .build();
+    }
+
+    /**
+     * Builds information about previously made changes that need to be preserved.
+     * This is used when a tool fails to ensure the AI includes all previous changes
+     * when providing fixes.
+     */
+    private String buildPreviousChangesInfo(ImplementationPlan lastValidPlan) {
+        if (lastValidPlan == null || !lastValidPlan.hasFileChanges()) {
+            return "";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n\n## IMPORTANT: Preserve Previous Changes\n\n");
+        sb.append("Your previous response included the following file changes that need to be preserved.\n");
+        sb.append("When you fix the errors, you MUST include ALL these changes in your response, ");
+        sb.append("not just the fix. If you omit any of these files, those changes will be lost.\n\n");
+        sb.append("**Files from your previous response** (").append(lastValidPlan.getFileChanges().size()).append("):\n");
+
+        for (FileChange fc : lastValidPlan.getFileChanges()) {
+            sb.append("- `").append(fc.getPath()).append("` (").append(fc.getOperation()).append(")\n");
+        }
+
+        sb.append("\nInclude all these files in your `fileChanges` array, updating any that need fixes.\n");
+
+        return sb.toString();
+    }
+
+    /**
+     * Executes tool validation loop for follow-up comments.
+     * Similar to the validation in generateValidatedImplementation but for comment handling.
+     *
+     * @return The final valid plan after validation, or null if validation failed
+     */
+    private ImplementationPlan executeToolValidationLoop(
+            AgentSession session, ImplementationPlan plan, String owner, String repo,
+            String workingBranch, Long issueNumber, String systemPrompt, String lastAiResponse) {
+
+        int maxToolExecutions = agentConfig.getValidation().getMaxToolExecutions();
+        int toolExecutions = 0;
+        Path workspaceDir = null;
+        ImplementationPlan currentPlan = plan;
+        String currentAiResponse = lastAiResponse;
+        List<AiMessage> conversationHistory = sessionService.toAiMessages(session);
+
+        try {
+            while (currentPlan.hasToolRequest() && toolExecutions < maxToolExecutions) {
+                toolExecutions++;
+
+                // Prepare workspace if not already done
+                if (workspaceDir == null) {
+                    ToolExecutionService.WorkspaceResult workspaceResult =
+                            toolExecutionService.prepareWorkspace(owner, repo, workingBranch, currentPlan.getFileChanges());
+                    if (!workspaceResult.success()) {
+                        log.error("Failed to prepare workspace for validation: {}", workspaceResult.error());
+                        giteaApiClient.postComment(owner, repo, issueNumber,
+                                "⚠️ **Workspace preparation failed**\n\n" + workspaceResult.error(), null);
+                        return currentPlan; // Return plan without validation
+                    }
+                    workspaceDir = workspaceResult.workspacePath();
+                } else {
+                    // Update existing workspace with new file changes
+                    for (FileChange change : currentPlan.getFileChanges()) {
+                        Path filePath = workspaceDir.resolve(change.getPath());
+                        try {
+                            switch (change.getOperation()) {
+                                case CREATE, UPDATE -> {
+                                    java.nio.file.Files.createDirectories(filePath.getParent());
+                                    java.nio.file.Files.writeString(filePath, change.getContent());
+                                }
+                                case DELETE -> java.nio.file.Files.deleteIfExists(filePath);
+                            }
+                        } catch (Exception e) {
+                            log.warn("Failed to update workspace file {}: {}", change.getPath(), e.getMessage());
+                        }
+                    }
+                }
+
+                // Execute the tool
+                ImplementationPlan.ToolRequest toolRequest = currentPlan.getToolRequest();
+                log.info("Executing validation tool (follow-up): {} {}", toolRequest.getTool(),
+                        toolRequest.getArgs() != null ? String.join(" ", toolRequest.getArgs()) : "");
+
+                ToolExecutionService.ToolResult result = toolExecutionService.executeTool(
+                        workspaceDir, toolRequest.getTool(), toolRequest.getArgs());
+
+                // Post tool result as comment
+                postToolResultComment(owner, repo, issueNumber, toolRequest, result);
+
+                // If tool succeeded, we're done
+                if (result.success()) {
+                    log.info("Validation tool succeeded for follow-up changes");
+                    return currentPlan;
+                }
+
+                // Tool failed - send feedback to AI for fixing
+                String toolFeedback = buildToolFeedback(toolRequest, result);
+                String previousChangesInfo = buildPreviousChangesInfo(currentPlan);
+                String feedbackMessage = toolFeedback + previousChangesInfo;
+
+                sessionService.addMessage(session, "user", feedbackMessage);
+
+                // Get updated history and call AI
+                List<AiMessage> updatedHistory = sessionService.toAiMessages(session);
+                currentAiResponse = aiClient.chat(updatedHistory.subList(0, updatedHistory.size() - 1),
+                        feedbackMessage, systemPrompt, null, agentConfig.getMaxTokens());
+                sessionService.addMessage(session, "assistant", currentAiResponse);
+
+                // Post AI thinking comment
+                postAiThinkingComment(owner, repo, issueNumber, currentAiResponse);
+
+                // Parse new response and merge with previous changes
+                ImplementationPlan previousPlan = currentPlan;
+                ImplementationPlan newPlan = parseAiResponse(currentAiResponse);
+                if (newPlan == null || !newPlan.hasFileChanges()) {
+                    log.warn("AI failed to provide file changes after tool failure");
+                    return currentPlan; // Return last valid plan
+                }
+
+                // Merge: preserve files that weren't updated
+                currentPlan = mergeFileChanges(previousPlan, newPlan);
+            }
+
+            // Reached max tool executions
+            if (toolExecutions >= maxToolExecutions) {
+                log.warn("Reached maximum tool executions ({}) for follow-up validation", maxToolExecutions);
+            }
+
+            return currentPlan;
+
+        } finally {
+            // Clean up workspace
+            if (workspaceDir != null) {
+                toolExecutionService.cleanupWorkspace(workspaceDir);
+            }
+        }
     }
 
     /**
@@ -482,6 +762,22 @@ public class IssueImplementationService {
                 return;
             }
 
+            // Execute tool validation if requested and validation is enabled
+            if (agentConfig.getValidation().isEnabled() && plan.hasToolRequest()) {
+                plan = executeToolValidationLoop(session, plan, owner, repo, workingBranch,
+                        issueNumber, systemPrompt, aiResponse);
+
+                if (plan == null || !plan.hasFileChanges()) {
+                    // Validation failed and couldn't be fixed
+                    sessionService.setStatus(session, AgentSession.AgentSessionStatus.PR_CREATED);
+                    giteaApiClient.postComment(owner, repo, issueNumber,
+                            "🤖 **AI Agent**: Validation failed and I couldn't fix the issues. " +
+                            "Please check the tool output above and provide more guidance.",
+                            null);
+                    return;
+                }
+            }
+
             // Apply the new changes
             if (branchName == null) {
                 // Create a new branch if we don't have one
@@ -494,7 +790,7 @@ public class IssueImplementationService {
                 String commitMessage = String.format("agent: %s %s (issue #%d, follow-up)",
                         change.getOperation().name().toLowerCase(), change.getPath(), issueNumber);
 
-                applyFileChange(owner, repo, branchName, change, commitMessage);
+                applyFileChange(owner, repo, branchName, change, commitMessage, session);
 
                 // Record file change in session
                 sessionService.addFileChange(session, change.getPath(), change.getOperation().name(), null);
@@ -651,7 +947,27 @@ public class IssueImplementationService {
      * Applies a single file change, supporting both diff-based and full content changes.
      */
     private void applyFileChange(String owner, String repo, String branchName,
-                                  FileChange change, String commitMessage) {
+                                  FileChange change, String commitMessage, AgentSession session) {
+        String systemPrompt = promptService.getSystemPrompt(AGENT_PROMPT_NAME);
+        applyFileChangeWithRetry(owner, repo, branchName, change, commitMessage, session, aiClient, systemPrompt);
+    }
+
+    /**
+     * Applies a file change with retry capability.
+     * If a diff fails, it fetches the current file content and asks the AI to regenerate the diff.
+     *
+     * @param owner         Repository owner
+     * @param repo          Repository name
+     * @param branchName    Target branch
+     * @param change        The file change to apply
+     * @param commitMessage Commit message
+     * @param session       Agent session (optional, for AI retry)
+     * @param aiClient      AI client (optional, for retry)
+     * @param systemPrompt  System prompt (optional, for retry)
+     */
+    private void applyFileChangeWithRetry(String owner, String repo, String branchName,
+                                           FileChange change, String commitMessage,
+                                           AgentSession session, AiClient aiClient, String systemPrompt) {
         switch (change.getOperation()) {
             case CREATE -> giteaApiClient.createOrUpdateFile(owner, repo, change.getPath(),
                     change.getContent(), commitMessage, branchName, null, null);
@@ -663,7 +979,29 @@ public class IssueImplementationService {
                     // Apply diff to existing content
                     String originalContent = giteaApiClient.getFileContent(owner, repo,
                             change.getPath(), branchName, null);
-                    newContent = diffApplyService.applyDiff(originalContent, change.getDiff());
+                    try {
+                        newContent = diffApplyService.applyDiff(originalContent, change.getDiff());
+                    } catch (DiffApplyService.DiffApplyException e) {
+                        // If we have AI context, try to regenerate the diff
+                        if (aiClient != null && session != null && systemPrompt != null) {
+                            log.warn("Diff failed for {}, asking AI to regenerate with current file content", change.getPath());
+
+                            String regeneratedContent = askAiToRegenerateDiff(
+                                    aiClient, systemPrompt, session, change.getPath(),
+                                    change.getDiff(), originalContent);
+
+                            if (regeneratedContent != null) {
+                                newContent = regeneratedContent;
+                                log.info("AI successfully regenerated content for {}", change.getPath());
+                            } else {
+                                throw new DiffApplyService.DiffApplyException(
+                                        "Failed to apply diff to file `" + change.getPath() + "` and AI could not regenerate: " + e.getMessage());
+                            }
+                        } else {
+                            throw new DiffApplyService.DiffApplyException(
+                                    "Failed to apply diff to file `" + change.getPath() + "`: " + e.getMessage());
+                        }
+                    }
                     log.debug("Applied diff to {}: {} chars -> {} chars",
                             change.getPath(), originalContent.length(), newContent.length());
                 } else {
@@ -679,6 +1017,78 @@ public class IssueImplementationService {
                 giteaApiClient.deleteFile(owner, repo, change.getPath(),
                         commitMessage, branchName, sha, null);
             }
+        }
+    }
+
+    /**
+     * Asks the AI to regenerate a diff when the original diff failed to apply.
+     * Provides the current file content so the AI can create a correct diff.
+     *
+     * @param aiClient       The AI client
+     * @param systemPrompt   System prompt
+     * @param session        Current session
+     * @param filePath       Path of the file
+     * @param failedDiff     The diff that failed to apply
+     * @param currentContent Current content of the file
+     * @return The new file content, or null if regeneration failed
+     */
+    private String askAiToRegenerateDiff(AiClient aiClient, String systemPrompt,
+                                          AgentSession session, String filePath,
+                                          String failedDiff, String currentContent) {
+        try {
+            String prompt = String.format("""
+                    ## Diff Application Failed
+                    
+                    The diff I tried to apply to `%s` failed because the file content has changed.
+                    
+                    ### Current File Content:
+                    ```
+                    %s
+                    ```
+                    
+                    ### The Diff That Failed:
+                    ```
+                    %s
+                    ```
+                    
+                    Please provide the **complete new file content** that implements the intended change.
+                    Output ONLY the file content, no JSON, no markdown code blocks, just the raw file content.
+                    """, filePath,
+                    currentContent.length() > 5000 ? currentContent.substring(0, 5000) + "\n... (truncated)" : currentContent,
+                    failedDiff);
+
+            List<AiMessage> history = sessionService.toAiMessages(session);
+            String response = aiClient.chat(history, prompt, systemPrompt, null, agentConfig.getMaxTokens());
+
+            if (response == null || response.isBlank()) {
+                return null;
+            }
+
+            // Clean up the response - remove any markdown code blocks if present
+            String content = response.strip();
+            if (content.startsWith("```")) {
+                // Remove first line (```java or similar)
+                int firstNewline = content.indexOf('\n');
+                if (firstNewline > 0) {
+                    content = content.substring(firstNewline + 1);
+                }
+                // Remove closing ```
+                if (content.endsWith("```")) {
+                    content = content.substring(0, content.length() - 3).stripTrailing();
+                }
+            }
+
+            // Validate that we got something reasonable
+            if (content.length() < 10) {
+                log.warn("AI returned very short content for {}: {} chars", filePath, content.length());
+                return null;
+            }
+
+            return content;
+
+        } catch (Exception e) {
+            log.error("Failed to ask AI to regenerate diff for {}: {}", filePath, e.getMessage());
+            return null;
         }
     }
 
@@ -727,33 +1137,66 @@ public class IssueImplementationService {
      */
     private void postAiThinkingComment(String owner, String repo, Long issueNumber, String aiResponse) {
         String thinking = extractNonJsonResponse(aiResponse);
-        if (thinking == null || thinking.isBlank()) {
-            return; // No thinking text to post
-        }
 
         // Extract summary from the response if available
         ImplementationPlan plan = parseAiResponse(aiResponse);
         String summary = (plan != null && plan.getSummary() != null) ? plan.getSummary() : null;
 
+        // If no thinking text and no plan data, nothing to post
+        if ((thinking == null || thinking.isBlank()) && plan == null) {
+            return;
+        }
+
         StringBuilder comment = new StringBuilder();
-        comment.append("🤖 **AI Agent Thinking**:\n\n");
-        comment.append(thinking);
+        comment.append("🤖 **AI Agent Response**:\n\n");
+
+        // Add thinking text if present
+        if (thinking != null && !thinking.isBlank()) {
+            comment.append(thinking);
+            comment.append("\n\n");
+        }
+
+        // Add summary if present
+        if (summary != null && !summary.isBlank()) {
+            comment.append("📝 **Summary**: ").append(summary).append("\n\n");
+        }
 
         // Add file request info if present
         if (plan != null && plan.hasFileRequests()) {
-            comment.append("\n\n📁 **Requesting files**: ");
+            comment.append("📁 **Requesting files**: ");
             comment.append(String.join(", ", plan.getRequestFiles().stream()
                     .map(f -> "`" + f + "`")
                     .toList()));
+            comment.append("\n\n");
         }
 
-        // Add summary if present and different from thinking
-        if (summary != null && !summary.isBlank() && !thinking.contains(summary)) {
-            comment.append("\n\n📝 **Summary**: ").append(summary);
+        // Add file changes info if present
+        if (plan != null && plan.hasFileChanges()) {
+            comment.append("📄 **Planned file changes** (").append(plan.getFileChanges().size()).append("):\n");
+            for (FileChange fc : plan.getFileChanges()) {
+                comment.append("- `").append(fc.getPath()).append("` (").append(fc.getOperation()).append(")\n");
+            }
+            comment.append("\n");
+        }
+
+        // Add tool request info if present
+        if (plan != null && plan.hasToolRequest()) {
+            ImplementationPlan.ToolRequest toolReq = plan.getToolRequest();
+            comment.append("🔧 **Will run**: `").append(toolReq.getTool());
+            if (toolReq.getArgs() != null && !toolReq.getArgs().isEmpty()) {
+                comment.append(" ").append(String.join(" ", toolReq.getArgs()));
+            }
+            comment.append("`\n");
+        }
+
+        // Only post if we have content
+        String commentText = comment.toString().strip();
+        if (commentText.equals("🤖 **AI Agent Response**:")) {
+            return; // Nothing meaningful to post
         }
 
         try {
-            giteaApiClient.postComment(owner, repo, issueNumber, comment.toString(), null);
+            giteaApiClient.postComment(owner, repo, issueNumber, commentText, null);
         } catch (Exception e) {
             log.warn("Failed to post AI thinking comment on issue #{}: {}", issueNumber, e.getMessage());
         }
@@ -946,10 +1389,20 @@ public class IssueImplementationService {
                         .toList();
             }
 
+            // Parse tool request if present
+            ImplementationPlan.ToolRequest toolRequest = null;
+            if (response.getRunTool() != null && response.getRunTool().getTool() != null) {
+                toolRequest = ImplementationPlan.ToolRequest.builder()
+                        .tool(response.getRunTool().getTool())
+                        .args(response.getRunTool().getArgs())
+                        .build();
+            }
+
             return ImplementationPlan.builder()
                     .summary(response.getSummary())
                     .requestFiles(requestFiles)
                     .fileChanges(fileChanges)
+                    .toolRequest(toolRequest)
                     .build();
         } catch (JacksonException e) {
             log.error("Failed to parse AI response as JSON: {}", e.getMessage());
@@ -992,20 +1445,14 @@ public class IssueImplementationService {
     /**
      * Attempts to repair truncated JSON by closing open structures.
      * This is a best-effort approach for handling incomplete AI responses.
+     * IMPORTANT: Only truncates if the JSON is actually incomplete (unbalanced brackets).
      */
     String repairTruncatedJson(String json) {
         if (json == null || json.isEmpty()) {
             return json;
         }
 
-        // Remove any trailing incomplete content after an unclosed string
-        // Look for the last complete file change entry
-        int lastCompleteObject = findLastCompleteFileChange(json);
-        if (lastCompleteObject > 0 && lastCompleteObject < json.length() - 10) {
-            json = json.substring(0, lastCompleteObject);
-        }
-
-        // Count brackets to check if JSON is complete
+        // First, check if the JSON is already complete (balanced brackets)
         int braces = 0;
         int brackets = 0;
         boolean inString = false;
@@ -1023,7 +1470,36 @@ public class IssueImplementationService {
             prevChar = c;
         }
 
-        // If unbalanced, try to close the structures
+        // If JSON is already balanced and complete, return as-is (do NOT truncate!)
+        if (braces == 0 && brackets == 0 && !inString) {
+            return json;
+        }
+
+        // JSON is truncated - try to repair it by finding last complete fileChange
+        int lastCompleteObject = findLastCompleteFileChange(json);
+        if (lastCompleteObject > 0 && lastCompleteObject < json.length() - 10) {
+            json = json.substring(0, lastCompleteObject);
+
+            // Recount brackets after truncation
+            braces = 0;
+            brackets = 0;
+            inString = false;
+            prevChar = 0;
+
+            for (char c : json.toCharArray()) {
+                if (c == '"' && prevChar != '\\') {
+                    inString = !inString;
+                } else if (!inString) {
+                    if (c == '{') braces++;
+                    else if (c == '}') braces--;
+                    else if (c == '[') brackets++;
+                    else if (c == ']') brackets--;
+                }
+                prevChar = c;
+            }
+        }
+
+        // If still unbalanced, try to close the structures
         if (braces > 0 || brackets > 0 || inString) {
             StringBuilder repaired = new StringBuilder(json);
 
@@ -1106,14 +1582,17 @@ public class IssueImplementationService {
     }
 
     @Data
+    @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
     static class AiImplementationResponse {
         private String summary;
         private List<String> requestFiles;  // Files the AI wants to see
         private List<AiFileChange> fileChanges;
+        private AiToolRequest runTool;  // Tool the AI wants to run for validation
     }
 
     @Data
+    @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
     static class AiFileChange {
         private String path;
@@ -1123,6 +1602,15 @@ public class IssueImplementationService {
     }
 
     @Data
+    @NoArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class AiToolRequest {
+        private String tool;
+        private List<String> args;
+    }
+
+    @Data
+    @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
     static class FileRequestResponse {
         private String reasoning;

@@ -83,32 +83,73 @@ Ensure the bot user has at minimum **Write** permission on the target repositori
 | `AGENT_ALLOWED_REPOS` | `agent.allowed-repos` | *(empty = all)* | Comma-separated list of `owner/repo` where agent is active |
 | `AGENT_VALIDATION_ENABLED` | `agent.validation.enabled` | `true` | Enable syntax validation before commit |
 | `AGENT_VALIDATION_MAX_RETRIES` | `agent.validation.max-retries` | `3` | Max iterations for error correction |
-| `AGENT_VALIDATION_BUILD_ENABLED` | `agent.validation.build-enabled` | `false` | Enable full build validation (requires cloning) |
-| `AGENT_VALIDATION_BUILD_TIMEOUT` | `agent.validation.build-timeout-seconds` | `300` | Timeout for build commands |
+| `AGENT_VALIDATION_MAX_TOOL_EXECUTIONS` | `agent.validation.max-tool-executions` | `10` | Max tool executions per validation cycle |
+| `AGENT_VALIDATION_TOOL_TIMEOUT` | `agent.validation.tool-timeout-seconds` | `300` | Timeout for tool commands |
+| `AGENT_VALIDATION_AVAILABLE_TOOLS` | `agent.validation.available-tools` | `mvn,gradle,npm,...` | Comma-separated list of available tools |
 
-## Code Validation
+## AI-Driven Code Validation
 
-The agent includes built-in code validation to catch errors before creating pull requests:
+The agent uses AI-driven validation where the AI decides which tools to run based on the project structure.
 
-### Syntax Validation (Default)
+### How It Works
 
-When `agent.validation.enabled=true`, the agent validates generated code syntax before committing:
+1. The AI analyzes the repository file tree (e.g., sees `pom.xml`)
+2. The AI generates code changes and requests a validation tool:
+   ```json
+   {
+     "fileChanges": [...],
+     "runTool": {"tool": "mvn", "args": ["compile", "-q", "-B"]}
+   }
+   ```
+3. The bot executes the tool in a cloned workspace with the changes applied
+4. The tool output is returned to the AI
+5. If there are errors, the AI fixes the code and can request the tool again
+6. This continues until the build succeeds or max-retries is reached
+
+### Installed Build Tools
+
+The Docker image includes the following build tools:
+
+| Language | Tools |
+|----------|-------|
+| **Java** | `mvn` (Maven), `gradle`, OpenJDK 21 |
+| **JavaScript/TypeScript** | `npm`, `node` |
+| **Python** | `python3`, `pip` |
+| **Go** | `go` |
+| **Rust** | `cargo`, `rustc` |
+| **C/C++** | `gcc`, `g++`, `make`, `cmake` |
+| **Ruby** | `ruby`, `bundle` |
+
+### Configuration
+
+You can customize which tools are available:
+
+```yaml
+agent:
+  validation:
+    enabled: true
+    max-retries: 3
+    max-tool-executions: 10
+    tool-timeout-seconds: 300
+    available-tools:
+      - mvn
+      - gradle
+      - npm
+      - go
+      - cargo
+      - python3
+      - make
+```
+
+### Syntax Validation (Fallback)
+
+If the AI doesn't request a tool, or as an additional check, the agent validates generated code syntax before committing:
 
 - **Java files**: Uses the Java Compiler API to detect syntax errors (missing semicolons, unclosed braces, etc.)
 - **JSON/YAML files**: Parses files to validate syntax
 
 If validation fails, the agent automatically sends the errors back to the AI for correction. This "iterative refinement" loop continues up to `max-retries` times.
 
-### Build Validation (Optional)
-
-When `agent.validation.build-enabled=true`, the agent performs full build validation:
-
-1. Clones the repository to a temporary directory
-2. Applies the generated file changes
-3. Runs the build command (`mvn compile` for Maven, `./gradlew compileJava` for Gradle, `npm run build` for Node.js)
-4. Reports build errors back to the AI if compilation fails
-
-**Note**: Build validation requires the build tools to be installed in the bot's environment (Maven, Gradle, or npm).
 
 ## Token Optimization
 

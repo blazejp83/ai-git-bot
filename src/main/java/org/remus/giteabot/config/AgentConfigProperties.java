@@ -47,7 +47,7 @@ public class AgentConfigProperties {
     @Data
     public static class ValidationConfig {
         /**
-         * Whether to validate generated code syntax before committing.
+         * Whether to validate generated code before committing.
          */
         private boolean enabled = true;
 
@@ -58,14 +58,33 @@ public class AgentConfigProperties {
         private int maxRetries = 3;
 
         /**
-         * Whether to run a full build (mvn compile / gradle build) for validation.
-         * This catches more errors but requires cloning the repository.
+         * Maximum number of tool executions per validation cycle.
+         * Prevents infinite loops if AI keeps requesting tools.
          */
-        private boolean buildEnabled = false;
+        private int maxToolExecutions = 10;
 
         /**
-         * Timeout in seconds for build commands.
+         * Timeout in seconds for tool commands.
          */
-        private int buildTimeoutSeconds = 300;
+        private int toolTimeoutSeconds = 300;
+
+        /**
+         * List of available build/validation tools the AI can use.
+         * These tools must be installed in the Docker image.
+         */
+        private List<String> availableTools = List.of(
+                "mvn",      // Java/Maven
+                "gradle",   // Java/Gradle
+                "npm",      // JavaScript/TypeScript
+                "go",       // Go
+                "cargo",    // Rust
+                "python3",  // Python
+                "pip",      // Python packages
+                "make",     // C/C++ and general builds
+                "gcc",      // C compiler
+                "g++",      // C++ compiler
+                "ruby",     // Ruby
+                "bundle"    // Ruby Bundler
+        );
     }
 }

@@ -31,6 +31,11 @@ public class ImplementationPlan {
     private String branchName;
 
     /**
+     * Tool the AI wants to run for validation.
+     */
+    private ToolRequest toolRequest;
+
+    /**
      * Returns true if the AI is requesting additional files.
      */
     public boolean hasFileRequests() {
@@ -42,5 +47,19 @@ public class ImplementationPlan {
      */
     public boolean hasFileChanges() {
         return fileChanges != null && !fileChanges.isEmpty();
+    }
+
+    /**
+     * Returns true if the AI wants to run a validation tool.
+     */
+    public boolean hasToolRequest() {
+        return toolRequest != null && toolRequest.getTool() != null && !toolRequest.getTool().isBlank();
+    }
+
+    @Data
+    @Builder
+    public static class ToolRequest {
+        private String tool;
+        private List<String> args;
     }
 }

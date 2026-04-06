@@ -381,5 +381,106 @@ class DiffApplyServiceTest {
         assertThat(result).contains("line3");
         assertThat(result).doesNotContain("originalLine");
     }
+
+    @Test
+    void applyDiff_crlfLineEndings_shouldMatch() {
+        // File has CRLF line endings, but search has LF
+        String original = "    private String description;\r\n\r\n    @Column(nullable = false)\r\n    private boolean completed;";
+
+        String diff = """
+                <<<<<<< SEARCH
+                    private String description;
+
+                    @Column(nullable = false)
+                    private boolean completed;
+                =======
+                    private String description;
+
+                    private String assignee;
+
+                    @Column(nullable = false)
+                    private boolean completed;
+                >>>>>>> REPLACE
+                """;
+
+        String result = service.applyDiff(original, diff);
+
+        assertThat(result).contains("private String assignee;");
+        assertThat(result).contains("private String description;");
+        assertThat(result).contains("private boolean completed;");
+    }
+
+    @Test
+    void applyDiff_differentEmptyLineCount_shouldMatch() {
+        // File has no empty line, but search expects one
+        String original = "    private String description;\n    @Column(nullable = false)\n    private boolean completed;";
+
+        String diff = """
+                <<<<<<< SEARCH
+                    private String description;
+
+                    @Column(nullable = false)
+                    private boolean completed;
+                =======
+                    private String description;
+
+                    private String assignee;
+
+                    @Column(nullable = false)
+                    private boolean completed;
+                >>>>>>> REPLACE
+                """;
+
+        String result = service.applyDiff(original, diff);
+
+        assertThat(result).contains("private String assignee;");
+    }
+
+    @Test
+    void applyDiff_indentationDifferences_shouldMatch() {
+        // File has different indentation
+        String original = "private String description;\n@Column(nullable = false)\nprivate boolean completed;";
+
+        String diff = """
+                <<<<<<< SEARCH
+                    private String description;
+                    @Column(nullable = false)
+                    private boolean completed;
+                =======
+                    private String description;
+                    private String assignee;
+                    @Column(nullable = false)
+                    private boolean completed;
+                >>>>>>> REPLACE
+                """;
+
+        String result = service.applyDiff(original, diff);
+
+        assertThat(result).contains("private String assignee;");
+    }
+
+    @Test
+    void applyDiff_multipleEmptyLines_shouldMatch() {
+        // File has multiple empty lines where search expects one
+        String original = "    private String description;\n\n\n    @Column\n    private boolean completed;";
+
+        String diff = """
+                <<<<<<< SEARCH
+                    private String description;
+
+                    @Column
+                    private boolean completed;
+                =======
+                    private String description;
+                    private String assignee;
+                    @Column
+                    private boolean completed;
+                >>>>>>> REPLACE
+                """;
+
+        String result = service.applyDiff(original, diff);
+
+        assertThat(result).contains("private String assignee;");
+    }
 }
 
