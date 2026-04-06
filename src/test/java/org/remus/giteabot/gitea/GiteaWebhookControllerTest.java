@@ -503,6 +503,151 @@ class GiteaWebhookControllerTest {
         verify(codeReviewService, never()).handleBotCommand(any(), any());
     }
 
+    @Test
+    void handleWebhook_issueAssignedToBot_agentEnabled_triggersAgent() throws Exception {
+        when(botConfigProperties.getUsername()).thenReturn("ai_bot");
+        when(agentConfigProperties.isEnabled()).thenReturn(true);
+        when(agentConfigProperties.getAllowedRepos()).thenReturn(java.util.List.of());
+
+        String payload = """
+                {
+                    "action": "assigned",
+                    "issue": {
+                        "number": 42,
+                        "title": "Add feature X",
+                        "body": "Implement feature X"
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    },
+                    "assignee": {
+                        "login": "ai_bot"
+                    },
+                    "sender": {
+                        "login": "someuser"
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("agent triggered"));
+
+        verify(issueImplementationService).handleIssueAssigned(any(WebhookPayload.class));
+    }
+
+    @Test
+    void handleWebhook_issueAssignedToBot_agentDisabled_ignored() throws Exception {
+        when(agentConfigProperties.isEnabled()).thenReturn(false);
+
+        String payload = """
+                {
+                    "action": "assigned",
+                    "issue": {
+                        "number": 42,
+                        "title": "Add feature X",
+                        "body": "Implement feature X"
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    },
+                    "assignee": {
+                        "login": "ai_bot"
+                    },
+                    "sender": {
+                        "login": "someuser"
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("ignored"));
+
+        verify(issueImplementationService, never()).handleIssueAssigned(any());
+    }
+
+    @Test
+    void handleWebhook_issueAssignedToOtherUser_ignored() throws Exception {
+        when(botConfigProperties.getUsername()).thenReturn("ai_bot");
+        when(agentConfigProperties.isEnabled()).thenReturn(true);
+
+        String payload = """
+                {
+                    "action": "assigned",
+                    "issue": {
+                        "number": 42,
+                        "title": "Add feature X",
+                        "body": "Implement feature X"
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    },
+                    "assignee": {
+                        "login": "other_user"
+                    },
+                    "sender": {
+                        "login": "someuser"
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("ignored"));
+
+        verify(issueImplementationService, never()).handleIssueAssigned(any());
+    }
+
+    @Test
+    void handleWebhook_issueAssignedToBot_repoNotAllowed_ignored() throws Exception {
+        when(botConfigProperties.getUsername()).thenReturn("ai_bot");
+        when(agentConfigProperties.isEnabled()).thenReturn(true);
+        when(agentConfigProperties.getAllowedRepos()).thenReturn(java.util.List.of("other/repo"));
+
+        String payload = """
+                {
+                    "action": "assigned",
+                    "issue": {
+                        "number": 42,
+                        "title": "Add feature X",
+                        "body": "Implement feature X"
+                    },
+                    "repository": {
+                        "name": "testrepo",
+                        "full_name": "testowner/testrepo",
+                        "owner": {"login": "testowner"}
+                    },
+                    "assignee": {
+                        "login": "ai_bot"
+                    },
+                    "sender": {
+                        "login": "someuser"
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/api/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().string("ignored"));
+
+        verify(issueImplementationService, never()).handleIssueAssigned(any());
+    }
+
     private WebhookPayload createTestPayload(String action) {
         WebhookPayload payload = new WebhookPayload();
         payload.setAction(action);
