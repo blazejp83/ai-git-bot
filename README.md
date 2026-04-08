@@ -77,6 +77,8 @@ docker compose -f systemtest/docker-compose-ollama.yml up --build -d
 
 This compose file provisions the local Ollama services only. Start the bot and your Gitea server separately, then see [Using Ollama](doc/OLLAMA.md) for details on configuring the bot to use Ollama.
 
+> **Note:** The issue implementation agent is not recommended with Ollama due to JSON output limitations. Set `AGENT_ENABLED=false` when using local LLMs. Code reviews work well with any provider.
+
 ## Architecture Overview
 
 ```mermaid

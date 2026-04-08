@@ -215,6 +215,69 @@ services:
 2. **Complex multi-file changes**: The agent works best for focused, well-described issues. Very complex issues requiring changes across many files may produce incomplete or incorrect implementations.
 3. **Iterative refinement**: The agent can auto-correct errors through iterative AI feedback using the validation tools. After `max-retries` attempts, it will still create the PR with a warning comment if errors persist.
 4. **No dependency management**: The agent cannot add new project dependencies (e.g., Maven/Gradle dependencies).
+5. **Ollama/Local LLM support**: The agent requires models that can reliably follow structured JSON output formats. Most local LLMs (via Ollama) are **not recommended** for the agent feature — they often fail to produce valid JSON responses. Use Anthropic Claude or OpenAI GPT-4 for best results. See [Ollama Limitations](#ollama-limitations) below.
+
+## Ollama Limitations
+
+⚠️ **The agent feature has limited support with Ollama and other local LLMs.**
+
+The agent requires the AI to respond with a specific JSON format containing file changes and tool requests.
+
+### Automatic JSON Mode
+
+The bot **automatically enables Ollama's JSON mode** when the agent is used. This forces the model to output valid JSON and significantly improves reliability. You can verify this in the logs:
+
+```
+INFO: Ollama chat request: JSON mode enabled for structured output
+```
+
+However, even with JSON mode enabled, local models may:
+
+- Produce incomplete or malformed JSON for complex requests
+- Struggle with multi-file implementations
+- Return simpler JSON structures than expected
+
+**Symptoms of issues (less common now with JSON mode):**
+```
+ERROR: Failed to parse AI response as JSON: Unexpected character ('@' (code 64))
+```
+
+**Recommendations:**
+
+| Use Case | Recommended Provider |
+|----------|---------------------|
+| **Agent (issue implementation)** | Anthropic Claude or OpenAI GPT-4 (most reliable) |
+| **Agent with local LLM** | Ollama with 32B+ parameter models |
+| **Code reviews (PR comments)** | Any provider, including small Ollama models |
+
+### Using Larger Models with Ollama
+
+Larger models (32B+ parameters) have significantly better instruction-following capabilities and **may work** with the agent:
+
+| Model | Agent Compatibility | RAM Required |
+|-------|---------------------|--------------|
+| `qwen2.5-coder:32b` | ✅ Best chance | ~24 GB+ |
+| `deepseek-coder:33b` | ✅ Best chance | ~24 GB+ |
+| `codellama:70b` | ✅ Best chance | ~48 GB+ |
+| `deepseek-coder-v2:16b` | ⚠️ May work | ~12 GB+ |
+
+**Important:** Even these larger models may occasionally fail. For reliable production use, cloud-based providers (Anthropic, OpenAI) are recommended.
+
+To try the agent with a larger Ollama model:
+
+```bash
+ollama pull qwen2.5-coder:32b
+
+export AI_PROVIDER=ollama
+export AI_MODEL=qwen2.5-coder:32b
+export AGENT_ENABLED=true
+```
+
+To **disable the agent** when using smaller Ollama models (recommended):
+
+```bash
+export AGENT_ENABLED=false
+```
 
 ## Error Handling
 
