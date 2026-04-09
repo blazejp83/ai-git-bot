@@ -1,6 +1,7 @@
 package org.remus.giteabot.admin;
 
 import lombok.extern.slf4j.Slf4j;
+import org.remus.giteabot.repository.RepositoryType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
@@ -12,6 +13,9 @@ import java.util.concurrent.ConcurrentMap;
  * {@link GitIntegration} entities.  Clients are cached by integration ID and
  * {@link GitIntegration#getUpdatedAt()} so that configuration changes
  * automatically produce fresh clients.
+ * <p>
+ * Supports multiple providers: Gitea uses {@code Authorization: token <token>},
+ * GitLab uses {@code PRIVATE-TOKEN: <token>}.
  */
 @Slf4j
 @Service
@@ -40,7 +44,8 @@ public class GiteaClientFactory {
 
         RestClient client = buildClient(integration);
         cache.put(integration.getId(), new CachedClient(updatedMillis, client));
-        log.info("Built new Gitea RestClient for integration '{}' (url={})", integration.getName(), integration.getUrl());
+        log.info("Built new {} RestClient for integration '{}' (url={})",
+                integration.getProviderType(), integration.getName(), integration.getUrl());
         return client;
     }
 
@@ -57,11 +62,18 @@ public class GiteaClientFactory {
 
     private RestClient buildClient(GitIntegration integration) {
         String decryptedToken = gitIntegrationService.decryptToken(integration);
-        return RestClient.builder()
+        RestClient.Builder builder = RestClient.builder()
                 .baseUrl(integration.getUrl())
-                .defaultHeader("Authorization", "token " + decryptedToken)
-                .defaultHeader("Accept", "application/json")
-                .build();
+                .defaultHeader("Accept", "application/json");
+
+        if (integration.getProviderType() == RepositoryType.GITLAB) {
+            builder.defaultHeader("PRIVATE-TOKEN", decryptedToken);
+        } else {
+            // Gitea (default)
+            builder.defaultHeader("Authorization", "token " + decryptedToken);
+        }
+
+        return builder.build();
     }
 
     private record CachedClient(long updatedAtMillis, RestClient client) {}
