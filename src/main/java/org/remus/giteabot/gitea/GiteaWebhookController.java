@@ -1,6 +1,8 @@
 package org.remus.giteabot.gitea;
 
 import lombok.extern.slf4j.Slf4j;
+import org.remus.giteabot.admin.Bot;
+import org.remus.giteabot.admin.BotService;
 import org.remus.giteabot.agent.IssueImplementationService;
 import org.remus.giteabot.config.AgentConfigProperties;
 import org.remus.giteabot.config.BotConfigProperties;
@@ -18,15 +20,43 @@ public class GiteaWebhookController {
     private final IssueImplementationService issueImplementationService;
     private final BotConfigProperties botConfig;
     private final AgentConfigProperties agentConfig;
+    private final BotService botService;
 
     public GiteaWebhookController(CodeReviewService codeReviewService,
                                   IssueImplementationService issueImplementationService,
                                   BotConfigProperties botConfig,
-                                  AgentConfigProperties agentConfig) {
+                                  AgentConfigProperties agentConfig,
+                                  BotService botService) {
         this.codeReviewService = codeReviewService;
         this.issueImplementationService = issueImplementationService;
         this.botConfig = botConfig;
         this.agentConfig = agentConfig;
+        this.botService = botService;
+    }
+
+    /**
+     * Per-bot webhook endpoint. Each bot has a unique webhook secret that serves as its URL path.
+     */
+    @PostMapping("/{webhookSecret}")
+    public ResponseEntity<String> handleBotWebhook(@PathVariable String webhookSecret,
+                                                    @RequestBody WebhookPayload payload) {
+        return botService.findByWebhookSecret(webhookSecret)
+                .map(bot -> {
+                    if (!bot.isEnabled()) {
+                        log.debug("Bot '{}' is disabled, ignoring webhook", bot.getName());
+                        return ResponseEntity.ok("bot disabled");
+                    }
+                    botService.incrementWebhookCallCount(bot);
+                    log.info("Webhook received for bot '{}' (secret={}...)",
+                            bot.getName(), webhookSecret.substring(0, Math.min(8, webhookSecret.length())));
+                    // Route to the default handler using the bot's prompt as prompt name
+                    return handleWebhook(payload, null);
+                })
+                .orElseGet(() -> {
+                    log.warn("No bot found for webhook secret: {}...",
+                            webhookSecret.substring(0, Math.min(8, webhookSecret.length())));
+                    return ResponseEntity.notFound().build();
+                });
     }
 
     @PostMapping

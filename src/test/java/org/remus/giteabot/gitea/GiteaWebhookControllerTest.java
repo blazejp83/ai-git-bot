@@ -2,6 +2,7 @@ package org.remus.giteabot.gitea;
 
 import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.remus.giteabot.admin.BotService;
 import org.remus.giteabot.agent.IssueImplementationService;
 import org.remus.giteabot.config.AgentConfigProperties;
 import org.remus.giteabot.config.BotConfigProperties;
@@ -39,6 +40,9 @@ class GiteaWebhookControllerTest {
 
     @MockitoBean
     private AgentConfigProperties agentConfigProperties;
+
+    @MockitoBean
+    private BotService botService;
 
     @Autowired
     private ObjectMapper objectMapper;
