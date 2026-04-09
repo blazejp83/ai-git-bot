@@ -9,7 +9,6 @@ import org.remus.giteabot.repository.model.ReviewComment;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.web.client.RestClient;
 
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
@@ -229,14 +228,7 @@ public class BitbucketApiClient implements RepositoryApiClient {
     public void createOrUpdateFile(String owner, String repo, String path, String content,
                                    String message, String branch, String sha) {
         log.info("Creating/updating file {} on branch '{}' in {}/{}", path, branch, owner, repo);
-        // Bitbucket uses multipart form POST to /src for commits.
-        // For simplicity, we use the JSON-based source endpoint.
-        String base64Content = Base64.getEncoder().encodeToString(content.getBytes());
-        Map<String, Object> request = Map.of(
-                "message", message,
-                "branch", branch,
-                path, content
-        );
+        // Bitbucket uses form POST to /src for commits.
         restClient.post()
                 .uri("/2.0/repositories/{workspace}/{repo_slug}/src", owner, repo)
                 .header("Content-Type", "application/x-www-form-urlencoded")
