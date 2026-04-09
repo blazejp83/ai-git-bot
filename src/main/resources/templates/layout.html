@@ -29,25 +29,25 @@
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item">
                         <a class="nav-link" th:href="@{/dashboard}"
-                           th:classappend="${#strings.startsWith(#httpServletRequest.requestURI, '/dashboard')} ? 'active'">
+                           th:classappend="${activeNav == 'dashboard'} ? 'active'">
                             <i class="bi bi-speedometer2"></i> Dashboard
                         </a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" th:href="@{/bots}"
-                           th:classappend="${#strings.startsWith(#httpServletRequest.requestURI, '/bots')} ? 'active'">
+                           th:classappend="${activeNav == 'bots'} ? 'active'">
                             <i class="bi bi-cpu"></i> Bots
                         </a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" th:href="@{/ai-integrations}"
-                           th:classappend="${#strings.startsWith(#httpServletRequest.requestURI, '/ai-integrations')} ? 'active'">
+                           th:classappend="${activeNav == 'ai-integrations'} ? 'active'">
                             <i class="bi bi-stars"></i> AI Integrations
                         </a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" th:href="@{/git-integrations}"
-                           th:classappend="${#strings.startsWith(#httpServletRequest.requestURI, '/git-integrations')} ? 'active'">
+                           th:classappend="${activeNav == 'git-integrations'} ? 'active'">
                             <i class="bi bi-git"></i> Git Integrations
                         </a>
                     </li>

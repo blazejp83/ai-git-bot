@@ -23,6 +23,7 @@ public class GitIntegrationController {
     public String list(Model model) {
         List<GitIntegration> integrations = gitIntegrationService.findAll();
         model.addAttribute("integrations", integrations);
+        model.addAttribute("activeNav", "git-integrations");
         return "git-integrations/list";
     }
 
@@ -30,6 +31,7 @@ public class GitIntegrationController {
     public String newForm(Model model) {
         model.addAttribute("integration", new GitIntegration());
         model.addAttribute("providerTypes", List.of("gitea"));
+        model.addAttribute("activeNav", "git-integrations");
         return "git-integrations/form";
     }
 
@@ -39,6 +41,7 @@ public class GitIntegrationController {
                 .map(integration -> {
                     model.addAttribute("integration", integration);
                     model.addAttribute("providerTypes", List.of("gitea"));
+                    model.addAttribute("activeNav", "git-integrations");
                     return "git-integrations/form";
                 })
                 .orElseGet(() -> {

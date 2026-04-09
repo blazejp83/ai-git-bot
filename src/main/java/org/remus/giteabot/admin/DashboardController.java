@@ -31,6 +31,7 @@ public class DashboardController {
         model.addAttribute("totalWebhookCalls", bots.stream().mapToLong(Bot::getWebhookCallCount).sum());
         model.addAttribute("totalTokensSent", bots.stream().mapToLong(Bot::getAiTokensSent).sum());
         model.addAttribute("totalTokensReceived", bots.stream().mapToLong(Bot::getAiTokensReceived).sum());
+        model.addAttribute("activeNav", "dashboard");
         return "dashboard";
     }
 }

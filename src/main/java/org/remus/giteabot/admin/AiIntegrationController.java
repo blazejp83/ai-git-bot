@@ -23,6 +23,7 @@ public class AiIntegrationController {
     public String list(Model model) {
         List<AiIntegration> integrations = aiIntegrationService.findAll();
         model.addAttribute("integrations", integrations);
+        model.addAttribute("activeNav", "ai-integrations");
         return "ai-integrations/list";
     }
 
@@ -30,6 +31,7 @@ public class AiIntegrationController {
     public String newForm(Model model) {
         model.addAttribute("integration", new AiIntegration());
         model.addAttribute("providerTypes", List.of("anthropic", "openai", "ollama", "llamacpp"));
+        model.addAttribute("activeNav", "ai-integrations");
         return "ai-integrations/form";
     }
 
@@ -39,6 +41,7 @@ public class AiIntegrationController {
                 .map(integration -> {
                     model.addAttribute("integration", integration);
                     model.addAttribute("providerTypes", List.of("anthropic", "openai", "ollama", "llamacpp"));
+                    model.addAttribute("activeNav", "ai-integrations");
                     return "ai-integrations/form";
                 })
                 .orElseGet(() -> {

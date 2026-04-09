@@ -29,6 +29,7 @@ public class BotController {
     public String list(Model model) {
         List<Bot> bots = botService.findAll();
         model.addAttribute("bots", bots);
+        model.addAttribute("activeNav", "bots");
         return "bots/list";
     }
 
@@ -37,6 +38,7 @@ public class BotController {
         model.addAttribute("bot", new Bot());
         model.addAttribute("aiIntegrations", aiIntegrationService.findAll());
         model.addAttribute("gitIntegrations", gitIntegrationService.findAll());
+        model.addAttribute("activeNav", "bots");
         return "bots/form";
     }
 
@@ -47,6 +49,7 @@ public class BotController {
                     model.addAttribute("bot", bot);
                     model.addAttribute("aiIntegrations", aiIntegrationService.findAll());
                     model.addAttribute("gitIntegrations", gitIntegrationService.findAll());
+                    model.addAttribute("activeNav", "bots");
                     return "bots/form";
                 })
                 .orElseGet(() -> {
