@@ -69,6 +69,10 @@ public class EncryptionService {
         try {
             byte[] combined = Base64.getDecoder().decode(cipherText);
 
+            if (combined.length < IV_LENGTH) {
+                throw new IllegalArgumentException("Ciphertext is too short to contain an IV");
+            }
+
             byte[] iv = new byte[IV_LENGTH];
             System.arraycopy(combined, 0, iv, 0, IV_LENGTH);
 
