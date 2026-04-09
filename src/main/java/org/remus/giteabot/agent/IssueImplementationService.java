@@ -137,9 +137,11 @@ public class IssueImplementationService {
             if (plan == null || plan.getFileChanges() == null || plan.getFileChanges().isEmpty()) {
                 sessionService.setStatus(session, AgentSession.AgentSessionStatus.FAILED);
                 giteaApiClient.postComment(owner, repo, issueNumber,
-                        "🤖 **AI Agent**: I was unable to generate a valid implementation plan for this issue. " +
-                        "The issue may be too complex or ambiguous for automated implementation.\n\n" +
-                        "You can mention me in a comment to provide more details or clarification.",
+                        """
+                                🤖 **AI Agent**: I was unable to generate a valid implementation plan for this issue. \
+                                The issue may be too complex or ambiguous for automated implementation.
+                                
+                                You can mention me in a comment to provide more details or clarification.""",
                         null);
                 return;
             }
@@ -163,8 +165,11 @@ public class IssueImplementationService {
             giteaApiClient.createBranch(owner, repo, branchName, baseBranch, null);
             log.info("Created branch '{}' from '{}' for issue #{}", branchName, baseBranch, issueNumber);
 
+            // Consolidate file changes - merge multiple diffs for the same file
+            List<FileChange> consolidatedChanges = consolidateFileChanges(plan.getFileChanges());
+
             // Commit file changes and track them in the session
-            for (FileChange change : plan.getFileChanges()) {
+            for (FileChange change : consolidatedChanges) {
                 String commitMessage = String.format("agent: %s %s (issue #%d)",
                         change.getOperation().name().toLowerCase(), change.getPath(), issueNumber);
 
@@ -185,11 +190,16 @@ public class IssueImplementationService {
 
             // Comment on issue with link to PR
             String successComment = String.format(
-                    "🤖 **AI Agent**: Implementation complete! I've created PR #%d with the following changes:\n\n" +
-                    "**Summary**: %s\n\n" +
-                    "**Files changed** (%d):\n%s\n\n" +
-                    "Please review the changes carefully. If you need modifications, mention me in a comment " +
-                    "on this issue and I'll continue working on it.",
+                    """
+                            🤖 **AI Agent**: Implementation complete! I've created PR #%d with the following changes:
+                            
+                            **Summary**: %s
+                            
+                            **Files changed** (%d):
+                            %s
+                            
+                            Please review the changes carefully. If you need modifications, mention me in a comment \
+                            on this issue and I'll continue working on it.""",
                     prNumber, plan.getSummary(), plan.getFileChanges().size(),
                     plan.getFileChanges().stream()
                             .map(fc -> String.format("- `%s` (%s)", fc.getPath(), fc.getOperation()))
@@ -215,9 +225,11 @@ public class IssueImplementationService {
             // Post failure comment
             try {
                 giteaApiClient.postComment(owner, repo, issueNumber,
-                        String.format("🤖 **AI Agent**: Implementation failed with error: `%s`\n\n" +
-                                "The created branch has been cleaned up. You can mention me in a comment " +
-                                "to try again with more details.",
+                        String.format("""
+                                        🤖 **AI Agent**: Implementation failed with error: `%s`
+                                        
+                                        The created branch has been cleaned up. You can mention me in a comment \
+                                        to try again with more details.""",
                                 e.getMessage()),
                         null);
             } catch (Exception commentError) {
@@ -410,7 +422,6 @@ public class IssueImplementationService {
 
                     currentMessage = toolRequestMessage;
                     sessionService.addMessage(session, "user", toolRequestMessage);
-                    continue;
                 }
             }
 
@@ -480,18 +491,22 @@ public class IssueImplementationService {
     }
 
     private String buildMissingToolFeedback() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("## Missing Validation Tool\n\n");
-        sb.append("Your response included `fileChanges` but no `runTool` for validation.\n\n");
-        sb.append("**Validation is mandatory.** Please provide the same file changes again, ");
-        sb.append("but this time include a `runTool` to validate the code.\n\n");
-        sb.append("Detect the build system from the file tree and request the appropriate tool:\n");
-        sb.append("- Maven: `{\"tool\": \"mvn\", \"args\": [\"compile\", \"-q\", \"-B\"]}`\n");
-        sb.append("- Gradle: `{\"tool\": \"gradle\", \"args\": [\"compileJava\", \"-q\"]}`\n");
-        sb.append("- npm: `{\"tool\": \"npm\", \"args\": [\"run\", \"build\"]}`\n");
-        sb.append("- etc.\n\n");
-        sb.append("Output JSON with both `fileChanges` and `runTool`.");
-        return sb.toString();
+        String sb = """
+                ## Missing Validation Tool
+                
+                Your response included `fileChanges` but no `runTool` for validation.
+                
+                **Validation is mandatory.** Please provide the same file changes again, \
+                but this time include a `runTool` to validate the code.
+                
+                Detect the build system from the file tree and request the appropriate tool:
+                - Maven: `{"tool": "mvn", "args": ["compile", "-q", "-B"]}`
+                - Gradle: `{"tool": "gradle", "args": ["compileJava", "-q"]}`
+                - npm: `{"tool": "npm", "args": ["run", "build"]}`
+                - etc.
+                
+                Output JSON with both `fileChanges` and `runTool`.""";
+        return sb;
     }
 
     /**
@@ -786,7 +801,10 @@ public class IssueImplementationService {
                 sessionService.setBranchName(session, branchName);
             }
 
-            for (FileChange change : plan.getFileChanges()) {
+            // Consolidate file changes - merge multiple diffs for the same file
+            List<FileChange> consolidatedChanges = consolidateFileChanges(plan.getFileChanges());
+
+            for (FileChange change : consolidatedChanges) {
                 String commitMessage = String.format("agent: %s %s (issue #%d, follow-up)",
                         change.getOperation().name().toLowerCase(), change.getPath(), issueNumber);
 
@@ -810,10 +828,15 @@ public class IssueImplementationService {
 
             // Post success comment
             String updateComment = String.format(
-                    "🤖 **AI Agent**: I've made the following additional changes:\n\n" +
-                    "**Summary**: %s\n\n" +
-                    "**Files changed** (%d):\n%s\n\n" +
-                    "The changes have been pushed to PR #%d.",
+                    """
+                            🤖 **AI Agent**: I've made the following additional changes:
+                            
+                            **Summary**: %s
+                            
+                            **Files changed** (%d):
+                            %s
+                            
+                            The changes have been pushed to PR #%d.""",
                     plan.getSummary(), plan.getFileChanges().size(),
                     plan.getFileChanges().stream()
                             .map(fc -> String.format("- `%s` (%s)", fc.getPath(), fc.getOperation()))
@@ -828,8 +851,10 @@ public class IssueImplementationService {
 
             try {
                 giteaApiClient.postComment(owner, repo, issueNumber,
-                        String.format("🤖 **AI Agent**: Failed to process your request: `%s`\n\n" +
-                                "Please try again or provide more details.",
+                        String.format("""
+                                        🤖 **AI Agent**: Failed to process your request: `%s`
+                                        
+                                        Please try again or provide more details.""",
                                 e.getMessage()),
                         null);
             } catch (Exception commentError) {
@@ -941,6 +966,89 @@ public class IssueImplementationService {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * Consolidates multiple file changes for the same file path into a single change.
+     * This is necessary because the AI may generate multiple UPDATE diffs for the same file,
+     * and applying them sequentially can fail if a later diff's SEARCH block doesn't match
+     * the content after earlier diffs have been applied.
+     * For UPDATE operations with diffs, the diffs are concatenated.
+     * For other operations, later changes for the same file replace earlier ones.
+     *
+     * @param changes The list of file changes to consolidate
+     * @return A consolidated list with at most one change per file path
+     */
+    private List<FileChange> consolidateFileChanges(List<FileChange> changes) {
+        if (changes == null || changes.isEmpty()) {
+            return changes;
+        }
+
+        // Group changes by file path, preserving order
+        Map<String, List<FileChange>> changesByPath = new java.util.LinkedHashMap<>();
+        for (FileChange change : changes) {
+            changesByPath.computeIfAbsent(change.getPath(), k -> new ArrayList<>()).add(change);
+        }
+
+        List<FileChange> consolidated = new ArrayList<>();
+
+        for (Map.Entry<String, List<FileChange>> entry : changesByPath.entrySet()) {
+            List<FileChange> fileChanges = entry.getValue();
+
+            if (fileChanges.size() == 1) {
+                // No consolidation needed
+                consolidated.add(fileChanges.getFirst());
+            } else {
+                // Multiple changes for the same file - need to consolidate
+                FileChange merged = consolidateChangesForFile(fileChanges);
+                if (merged != null) {
+                    consolidated.add(merged);
+                    log.info("Consolidated {} changes for file {} into one", fileChanges.size(), entry.getKey());
+                }
+            }
+        }
+
+        return consolidated;
+    }
+
+    /**
+     * Consolidates multiple changes for a single file into one change.
+     */
+    private FileChange consolidateChangesForFile(List<FileChange> changes) {
+        if (changes.isEmpty()) {
+            return null;
+        }
+
+        // Find the last non-UPDATE or first change
+        FileChange base = changes.getLast();
+
+        // Check if all changes are diff-based UPDATEs
+        boolean allDiffBasedUpdates = changes.stream()
+                .allMatch(c -> c.getOperation() == FileChange.Operation.UPDATE && c.isDiffBased());
+
+        if (allDiffBasedUpdates) {
+            // Concatenate all diffs into one combined diff
+            StringBuilder combinedDiff = new StringBuilder();
+            for (FileChange change : changes) {
+                if (change.getDiff() != null && !change.getDiff().isBlank()) {
+                    if (!combinedDiff.isEmpty()) {
+                        combinedDiff.append("\n\n");
+                    }
+                    combinedDiff.append(change.getDiff());
+                }
+            }
+
+            return FileChange.builder()
+                    .path(base.getPath())
+                    .operation(FileChange.Operation.UPDATE)
+                    .diff(combinedDiff.toString())
+                    .build();
+        }
+
+        // For mixed operations, use the last change (which should have the complete intended state)
+        // This handles cases like: UPDATE (diff) followed by UPDATE (full content)
+        log.debug("Mixed operation types for {}, using last change", base.getPath());
+        return base;
     }
 
     /**

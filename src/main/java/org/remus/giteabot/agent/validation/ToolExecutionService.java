@@ -1,6 +1,7 @@
 package org.remus.giteabot.agent.validation;
 
 import lombok.extern.slf4j.Slf4j;
+import org.remus.giteabot.agent.DiffApplyService;
 import org.remus.giteabot.agent.model.FileChange;
 import org.remus.giteabot.config.AgentConfigProperties;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,13 +22,16 @@ import java.util.concurrent.TimeUnit;
 public class ToolExecutionService {
 
     private final AgentConfigProperties agentConfig;
+    private final DiffApplyService diffApplyService;
     private final String giteaUrl;
     private final String giteaToken;
 
     public ToolExecutionService(AgentConfigProperties agentConfig,
+                                DiffApplyService diffApplyService,
                                 @Value("${gitea.url}") String giteaUrl,
                                 @Value("${gitea.token}") String giteaToken) {
         this.agentConfig = agentConfig;
+        this.diffApplyService = diffApplyService;
         this.giteaUrl = giteaUrl;
         this.giteaToken = giteaToken;
     }
@@ -73,9 +77,31 @@ public class ToolExecutionService {
                 Path filePath = tempDir.resolve(change.getPath());
 
                 switch (change.getOperation()) {
-                    case CREATE, UPDATE -> {
+                    case CREATE -> {
                         Files.createDirectories(filePath.getParent());
                         Files.writeString(filePath, change.getContent());
+                    }
+                    case UPDATE -> {
+                        Files.createDirectories(filePath.getParent());
+                        String newContent;
+                        if (change.isDiffBased()) {
+                            // Apply diff to existing file content
+                            String originalContent = Files.exists(filePath)
+                                    ? Files.readString(filePath)
+                                    : "";
+                            try {
+                                newContent = diffApplyService.applyDiff(originalContent, change.getDiff());
+                                log.debug("Applied diff to {}: {} chars -> {} chars",
+                                        change.getPath(), originalContent.length(), newContent.length());
+                            } catch (DiffApplyService.DiffApplyException e) {
+                                log.error("Failed to apply diff to {}: {}", change.getPath(), e.getMessage());
+                                return WorkspaceResult.failure("Failed to apply diff to " + change.getPath() + ": " + e.getMessage());
+                            }
+                        } else {
+                            // Full content replacement
+                            newContent = change.getContent();
+                        }
+                        Files.writeString(filePath, newContent);
                     }
                     case DELETE -> Files.deleteIfExists(filePath);
                 }
