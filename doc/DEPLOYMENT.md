@@ -1,11 +1,13 @@
 # Deployment
 
-This guide covers deploying the AI Gitea Bot using Docker Compose.
+This guide covers deploying the AI Code Review Bot using Docker Compose.
 
 ## Prerequisites
 
 - **Docker** and **Docker Compose** installed
-- A **Gitea instance** with the bot user configured (see [Gitea Setup](GITEA_SETUP.md))
+- A **Git hosting platform** configured:
+  - Gitea: See [Gitea Setup](GITEA_SETUP.md)
+  - GitHub / GitHub Enterprise: See [GitHub Setup](GITHUB_SETUP.md)
 - API credentials for your chosen AI provider (Anthropic, OpenAI) or a local Ollama/llama.cpp instance
 
 ## Quick Start
@@ -22,7 +24,7 @@ Then:
 1. Navigate to `http://localhost:8080` to complete initial setup
 2. Create your admin account
 3. Configure AI and Git integrations via the web UI
-4. Create a bot and configure webhooks in Gitea
+4. Create a bot and configure webhooks in your Git provider (Gitea or GitHub)
 
 See the [User Guide](USER_GUIDE.md) for detailed instructions.
 
@@ -99,14 +101,16 @@ See [Agent Documentation](AGENT.md) for full details.
 
 ## Configuration via Web UI
 
-All AI provider and Gitea configuration is managed through the web interface:
+All AI provider and Git configuration is managed through the web interface:
 
 1. **AI Integrations**: Create connections to AI providers (Anthropic, OpenAI, Ollama, llama.cpp)
    - Provider-specific default API URLs are pre-filled
    - Suggested models are available via dropdown
    - API keys are encrypted at rest
 
-2. **Git Integrations**: Create connections to Gitea instances
+2. **Git Integrations**: Create connections to Git hosting platforms
+   - **Gitea**: Self-hosted Gitea instances — see [Gitea Setup](GITEA_SETUP.md)
+   - **GitHub**: github.com or GitHub Enterprise Server — see [GitHub Setup](GITHUB_SETUP.md)
    - Tokens are encrypted at rest
 
 3. **Bots**: Create bots that combine an AI integration with a Git integration

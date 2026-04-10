@@ -1,6 +1,6 @@
 # Using llama.cpp
 
-This guide covers running the AI Gitea Bot with [llama.cpp](https://github.com/ggerganov/llama.cpp) for local, private AI-powered code reviews using GGUF model files — no external API keys required.
+This guide covers running the AI Code Review Bot with [llama.cpp](https://github.com/ggerganov/llama.cpp) for local, private AI-powered code reviews using GGUF model files — no external API keys required.
 
 ## Overview
 

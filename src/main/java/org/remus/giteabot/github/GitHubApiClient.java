@@ -22,6 +22,7 @@ public class GitHubApiClient implements RepositoryApiClient {
 
     private final RestClient restClient;
     private final String baseUrl;
+    private final String cloneUrl;
     private final String token;
 
     /**
@@ -29,17 +30,24 @@ public class GitHubApiClient implements RepositoryApiClient {
      *
      * @param restClient pre-configured RestClient pointing at the GitHub API base URL
      * @param baseUrl    the GitHub API base URL (e.g. {@code https://api.github.com})
+     * @param cloneUrl   the GitHub web URL for cloning (e.g. {@code https://github.com})
      * @param token      the personal access token or app token
      */
-    public GitHubApiClient(RestClient restClient, String baseUrl, String token) {
+    public GitHubApiClient(RestClient restClient, String baseUrl, String cloneUrl, String token) {
         this.restClient = restClient;
         this.baseUrl = baseUrl;
+        this.cloneUrl = cloneUrl;
         this.token = token;
     }
 
     @Override
     public String getBaseUrl() {
         return baseUrl;
+    }
+
+    @Override
+    public String getCloneUrl() {
+        return cloneUrl;
     }
 
     @Override
@@ -51,7 +59,9 @@ public class GitHubApiClient implements RepositoryApiClient {
 
     @Override
     public String getPullRequestDiff(String owner, String repo, Long pullNumber) {
-        log.info("Fetching diff for PR #{} in {}/{}", pullNumber, owner, repo);
+        log.info("Fetching diff for PR #{} in {}/{} from baseUrl={}", pullNumber, owner, repo, baseUrl);
+        log.debug("Token present: {}, tokenLength: {}", token != null && !token.isBlank(),
+                token != null ? token.length() : 0);
         return restClient.get()
                 .uri("/repos/{owner}/{repo}/pulls/{pull_number}", owner, repo, pullNumber)
                 .header("Accept", "application/vnd.github.v3.diff")

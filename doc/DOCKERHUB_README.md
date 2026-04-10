@@ -1,11 +1,12 @@
-# AI Gitea Bot
+# AI Code Review Bot
 
-AI-powered code review bot for Gitea with a **web-based management UI**. Supports multiple AI providers — Anthropic Claude, OpenAI, Ollama (local LLMs), and llama.cpp.
+AI-powered code review bot for **Gitea and GitHub** with a **web-based management UI**. Supports multiple AI providers — Anthropic Claude, OpenAI, Ollama (local LLMs), and llama.cpp.
 
 ## Features
 
 - **Web-Based Management** — Configure bots, AI providers, and Git connections through a browser UI
 - **Multi-Bot Support** — Create multiple bots with different AI providers and prompts
+- **Multiple Git Providers** — Gitea, GitHub, and GitHub Enterprise support
 - **Automatic PR Reviews** — Reviews diffs when Pull Requests are opened or updated
 - **Multiple AI Providers** — Anthropic, OpenAI, Ollama, and llama.cpp support
 - **Interactive Bot Commands** — Mention the bot in PR comments to ask questions
@@ -25,7 +26,7 @@ Then:
 1. Navigate to `http://localhost:8080`
 2. Create your admin account
 3. Configure AI and Git integrations via the web UI
-4. Create a bot and configure webhooks in Gitea
+4. Create a bot and configure webhooks in your Git provider
 
 ## Docker Compose
 
@@ -78,6 +79,14 @@ volumes:
 
 All AI configuration (API URLs, keys, models) is managed through the web UI — no environment variables needed.
 
+## Supported Git Providers
+
+| Provider | Description |
+|----------|-------------|
+| **Gitea** | Self-hosted Gitea instances |
+| **GitHub** | github.com |
+| **GitHub Enterprise** | Self-hosted GitHub Enterprise Server |
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -95,14 +104,26 @@ All AI configuration (API URLs, keys, models) is managed through the web UI — 
 | `AGENT_MAX_TOKENS` | `32768` | Maximum tokens for AI responses in agent mode |
 | `AGENT_BRANCH_PREFIX` | `ai-agent/` | Prefix for branches created by the agent |
 
-## Gitea Webhook Setup
+## Webhook Setup
 
-Each bot gets a unique webhook URL displayed in the web UI (e.g., `/api/webhook/abc123-...`).
+Each bot gets a unique webhook URL displayed in the web UI:
+- **Gitea**: `/api/webhook/abc123-...`
+- **GitHub**: `/api/github-webhook/abc123-...`
 
-1. In Gitea, go to your repository → **Settings → Webhooks → Add Webhook → Gitea**
+### For Gitea
+
+1. Go to your repository → **Settings → Webhooks → Add Webhook → Gitea**
 2. Set **Target URL** to your bot's webhook URL
 3. Select events: **Pull Request**, **Issue Comment**, **Pull Request Review**, **Pull Request Comment**
 4. Save the webhook
+
+### For GitHub
+
+1. Go to your repository → **Settings → Webhooks → Add webhook**
+2. Set **Payload URL** to your bot's webhook URL
+3. Set **Content type** to `application/json`
+4. Select events: **Pull requests**, **Issue comments**, **Pull request reviews**, **Pull request review comments**
+5. Save the webhook
 
 ## Volumes
 
@@ -124,6 +145,7 @@ Built-in health check runs every 30s with a 30s start period.
 - [User Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/USER_GUIDE.md)
 - [Architecture](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/ARCHITECTURE.md)
 - [Gitea Setup Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/GITEA_SETUP.md)
+- [GitHub Setup Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/GITHUB_SETUP.md)
 - [Deployment Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/DEPLOYMENT.md)
 
 ## License

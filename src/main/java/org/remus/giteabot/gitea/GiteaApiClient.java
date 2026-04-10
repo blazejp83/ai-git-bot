@@ -22,20 +22,32 @@ public class GiteaApiClient implements RepositoryApiClient {
 
     private final RestClient giteaRestClient;
     private final String giteaUrl;
+    private final String cloneUrl;
     private final String token;
 
     /**
      * Creates a GiteaApiClient with the given RestClient, Gitea URL, and token.
+     *
+     * @param restClient pre-configured RestClient pointing at the Gitea API base URL
+     * @param giteaUrl   the Gitea API base URL (e.g. {@code https://gitea.example.com})
+     * @param cloneUrl   the Gitea web URL for cloning (same as giteaUrl for Gitea)
+     * @param token      the access token
      */
-    public GiteaApiClient(RestClient restClient, String giteaUrl, String token) {
+    public GiteaApiClient(RestClient restClient, String giteaUrl, String cloneUrl, String token) {
         this.giteaRestClient = restClient;
         this.giteaUrl = giteaUrl;
+        this.cloneUrl = cloneUrl;
         this.token = token;
     }
 
     @Override
     public String getBaseUrl() {
         return giteaUrl;
+    }
+
+    @Override
+    public String getCloneUrl() {
+        return cloneUrl;
     }
 
     @Override

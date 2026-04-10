@@ -1,29 +1,29 @@
 # Architecture
 
-This document describes the high-level architecture of the AI Gitea Bot, including component responsibilities and request flows.
+This document describes the high-level architecture of the AI Code Review Bot, including component responsibilities and request flows.
 
 ## System Overview
 
 ```mermaid
 graph LR
-    Gitea["Gitea Instance"]
-    Bot["AI Gitea Bot"]
+    Git["Git Provider<br/>(Gitea / GitHub)"]
+    Bot["AI Code Review Bot"]
     AI["AI Provider<br/>(Anthropic / OpenAI / Ollama / llama.cpp)"]
     DB["PostgreSQL Database"]
 
-    Gitea -- "Webhook (PR/Comment/Review event)" --> Bot
-    Bot -- "Fetch PR diff" --> Gitea
-    Bot -- "Post review/comment" --> Gitea
-    Bot -- "Fetch reviews & comments" --> Gitea
-    Bot -- "Add reaction" --> Gitea
+    Git -- "Webhook (PR/Comment/Review event)" --> Bot
+    Bot -- "Fetch PR diff" --> Git
+    Bot -- "Post review/comment" --> Git
+    Bot -- "Fetch reviews & comments" --> Git
+    Bot -- "Add reaction" --> Git
     Bot -- "Review diff / Chat" --> AI
     AI -- "Review text" --> Bot
     Bot -- "Config & Sessions" --> DB
 ```
 
-The bot sits between a Gitea instance and a configurable AI provider. When a pull request is opened or updated, Gitea sends a webhook to the bot. The bot fetches the diff, sends it to the configured AI provider for review, and posts the review back as a PR comment. All configuration (AI integrations, Git integrations, bots) and conversation sessions are persisted in a database.
+The bot sits between a Git hosting platform (Gitea or GitHub) and a configurable AI provider. When a pull request is opened or updated, the Git provider sends a webhook to the bot. The bot fetches the diff, sends it to the configured AI provider for review, and posts the review back as a PR comment. All configuration (AI integrations, Git integrations, bots) and conversation sessions are persisted in a database.
 
-The bot also responds to inline review comments and submitted reviews containing bot mentions by fetching the relevant review data from the Gitea API and posting context-aware replies.
+The bot also responds to inline review comments and submitted reviews containing bot mentions by fetching the relevant review data from the Git API and posting context-aware replies.
 
 ## Component Diagram
 
@@ -31,7 +31,8 @@ The bot also responds to inline review comments and submitted reviews containing
 graph TD
     subgraph "Spring Boot Application"
         subgraph "Web Layer"
-            WebhookController["GiteaWebhookController<br/><i>Per-bot webhook endpoints</i>"]
+            GiteaWebhookController["GiteaWebhookController<br/><i>Gitea webhook endpoints</i>"]
+            GitHubWebhookController["GitHubWebhookController<br/><i>GitHub webhook endpoints</i>"]
             AdminControllers["Admin Controllers<br/><i>Dashboard, Bots, Integrations</i>"]
             SetupController["SetupController<br/><i>Initial setup</i>"]
         end
@@ -64,6 +65,20 @@ graph TD
             end
         end
 
+        subgraph "Repository Provider Layer"
+            RepoClientFactory["RepositoryClientFactory<br/><i>Client creation</i>"]
+            RepoProviderRegistry["RepositoryProviderRegistry<br/><i>Provider discovery</i>"]
+            subgraph "Repository Provider Metadata"
+                GiteaMeta["GiteaProviderMetadata"]
+                GitHubMeta["GitHubProviderMetadata"]
+            end
+            subgraph "Repository Clients"
+                RepoInterface["RepositoryApiClient<br/><i>Interface</i>"]
+                GiteaClient["GiteaApiClient"]
+                GitHubClient["GitHubApiClient"]
+            end
+        end
+
         subgraph "Repository Layer"
             BotRepo["BotRepository"]
             AiIntegrationRepo["AiIntegrationRepository"]
@@ -75,6 +90,7 @@ graph TD
 
     subgraph "External"
         Gitea["Gitea"]
+        GitHub["GitHub / GitHub Enterprise"]
         Anthropic["Anthropic API"]
         OpenAI["OpenAI API"]
         Ollama["Ollama (local)"]
@@ -83,29 +99,42 @@ graph TD
         DB["Database<br/><i>PostgreSQL / H2</i>"]
     end
 
-    WebhookController --> BotService
-    WebhookController --> BotWebhookService
+    GiteaWebhookController --> BotService
+    GiteaWebhookController --> BotWebhookService
+    GitHubWebhookController --> BotService
+    GitHubWebhookController --> BotWebhookService
     BotWebhookService --> AiClientFactory
+    BotWebhookService --> RepoClientFactory
     BotWebhookService --> SessionService
     AiClientFactory --> AiProviderRegistry
     AiClientFactory --> AiIntegrationService
+    RepoClientFactory --> RepoProviderRegistry
+    RepoClientFactory --> GitIntegrationService
     AiProviderRegistry --> AnthropicMeta
     AiProviderRegistry --> OpenAiMeta
     AiProviderRegistry --> OllamaMeta
     AiProviderRegistry --> LlamaCppMeta
+    RepoProviderRegistry --> GiteaMeta
+    RepoProviderRegistry --> GitHubMeta
     AnthropicMeta --> AnthropicImpl
     OpenAiMeta --> OpenAiImpl
     OllamaMeta --> OllamaImpl
     LlamaCppMeta --> LlamaCppImpl
+    GiteaMeta --> GiteaClient
+    GitHubMeta --> GitHubClient
     AiInterface -.-> AbstractClient
     AbstractClient -.-> AnthropicImpl
     AbstractClient -.-> OpenAiImpl
     AbstractClient -.-> OllamaImpl
     AbstractClient -.-> LlamaCppImpl
+    RepoInterface -.-> GiteaClient
+    RepoInterface -.-> GitHubClient
     AnthropicImpl --> Anthropic
     OpenAiImpl --> OpenAI
     OllamaImpl --> Ollama
     LlamaCppImpl --> LlamaCpp
+    GiteaClient --> Gitea
+    GitHubClient --> GitHub
     BotRepo --> DB
     SessionRepo --> DB
 ```
@@ -175,6 +204,67 @@ AiClient (interface)
 | Auth | `x-api-key` header | `Bearer` token | None | None |
 | Streaming | Not used | Not used | Disabled (`stream: false`) | Disabled (`stream: false`) |
 | JSON Mode | N/A | N/A | `format: "json"` | GBNF grammar |
+
+## Repository Provider Architecture
+
+The bot uses a similar **provider-agnostic abstraction layer** for Git hosting platforms:
+
+### RepositoryProviderMetadata Interface
+
+Each Git provider implements `RepositoryProviderMetadata` to define:
+- Provider type identifier (e.g., "gitea", "github")
+- Default web URL
+- How to resolve API URLs from web URLs
+- How to resolve clone URLs
+- How to build the authorization header
+- How to build the `RestClient`
+- How to create the `RepositoryApiClient` instance
+
+```
+RepositoryProviderMetadata (interface)
+ ├── GiteaProviderMetadata
+ │    └── Default URL: https://gitea.example.com
+ │    └── Auth: token <token>
+ │    └── API: Same base URL with /api/v1 paths
+ └── GitHubProviderMetadata
+      └── Default URL: https://github.com
+      └── Auth: Bearer <token>
+      └── API: api.github.com (public) or <host>/api/v3 (Enterprise)
+```
+
+### RepositoryProviderRegistry
+
+Spring `@Service` that collects all `RepositoryProviderMetadata` beans and provides:
+- List of available provider types
+- Lookup by provider type
+- Maps of default URLs (for UI)
+
+### RepositoryApiClient Interface
+
+All Git provider clients implement this interface:
+
+```
+RepositoryApiClient (interface)
+ ├── GiteaApiClient
+ └── GitHubApiClient
+```
+
+Methods include:
+- `getPullRequestDiff()` — Fetch PR diff
+- `postComment()` — Post PR comment
+- `postReviewComment()` — Post review with body
+- `addReaction()` — Add emoji reaction
+- `getFileContent()` — Get file content for context
+- `createBranch()` / `commitFile()` / `createPullRequest()` — Agent operations
+
+### Provider Differences
+
+| Feature | Gitea | GitHub |
+|---------|-------|--------|
+| Auth Header | `token <token>` | `Bearer <token>` |
+| API Base | `<url>/api/v1` | `api.github.com` or `<host>/api/v3` |
+| PR Diff | `/repos/{owner}/{repo}/pulls/{pr}/diff` | `/repos/{owner}/{repo}/pulls/{pr}` with `Accept: diff` |
+| Reactions | Text-based (`:eyes:`) | Text-based (`eyes`) |
 
 ## Entity Model
 
@@ -252,13 +342,24 @@ erDiagram
 
 ## Components
 
-### GiteaWebhookController
+### Webhook Controllers
+
+#### GiteaWebhookController
 
 - **Package:** `org.remus.giteabot.gitea`
 - **Endpoint:** `POST /api/webhook/{webhookSecret}`
 - Receives Gitea webhook payloads for pull request, issue comment, and review comment events
 - Looks up Bot by webhook secret
 - Routes events based on payload structure to `BotWebhookService`
+
+#### GitHubWebhookController
+
+- **Package:** `org.remus.giteabot.github`
+- **Endpoint:** `POST /api/github-webhook/{webhookSecret}`
+- Receives GitHub webhook payloads for pull request, issue comment, and review comment events
+- Looks up Bot by webhook secret
+- Converts GitHub payload format to common event model
+- Routes events to `BotWebhookService`
 
 ### BotWebhookService
 
@@ -292,6 +393,14 @@ erDiagram
 - Define provider-specific defaults and client creation logic
 - Registered as `@Component` beans
 
+### RepositoryProviderMetadata Implementations
+
+- **Package:** `org.remus.giteabot.repository`
+- `GiteaProviderMetadata` — Gitea API client factory
+- `GitHubProviderMetadata` — GitHub API client factory
+- Define provider-specific URL resolution and client creation
+- Registered as `@Component` beans
+
 ### SessionService
 
 - **Package:** `org.remus.giteabot.session`
@@ -311,33 +420,28 @@ erDiagram
 
 ```mermaid
 sequenceDiagram
-    participant Gitea
+    participant Git as Git Provider
     participant Controller as WebhookController
     participant BotService
     participant BotWebhook as BotWebhookService
-    participant Factory as AiClientFactory
-    participant Registry as AiProviderRegistry
-    participant Meta as ProviderMetadata
+    participant AiFactory as AiClientFactory
+    participant RepoFactory as RepositoryClientFactory
     participant AI as AiClient
-    participant GiteaAPI
+    participant GitAPI as Git API
 
-    Gitea->>Controller: POST /api/webhook/{secret}
+    Git->>Controller: POST /api/webhook/{secret}
     Controller->>BotService: findByWebhookSecret(secret)
     BotService-->>Controller: Bot
     Controller->>BotWebhook: handleBotWebhookEvent(bot, payload)
-    BotWebhook->>Factory: getClient(bot.aiIntegration)
-    Factory->>Registry: getProviderOrThrow(providerType)
-    Registry-->>Factory: ProviderMetadata
-    Factory->>Meta: buildRestClient(integration, apiKey)
-    Meta-->>Factory: RestClient
-    Factory->>Meta: createClient(restClient, integration)
-    Meta-->>Factory: AiClient
-    Factory-->>BotWebhook: AiClient (cached)
-    BotWebhook->>GiteaAPI: getPullRequestDiff()
-    GiteaAPI-->>BotWebhook: diff
+    BotWebhook->>AiFactory: getClient(bot.aiIntegration)
+    AiFactory-->>BotWebhook: AiClient (cached)
+    BotWebhook->>RepoFactory: getClient(bot.gitIntegration)
+    RepoFactory-->>BotWebhook: RepositoryApiClient
+    BotWebhook->>GitAPI: getPullRequestDiff()
+    GitAPI-->>BotWebhook: diff
     BotWebhook->>AI: reviewDiff(diff, prompt)
     AI-->>BotWebhook: review text
-    BotWebhook->>GiteaAPI: postReviewComment(review)
+    BotWebhook->>GitAPI: postReviewComment(review)
 ```
 
 ### Bot Command Flow
@@ -345,18 +449,18 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant User
-    participant Gitea
+    participant Git as Git Provider
     participant Controller as WebhookController
     participant BotWebhook as BotWebhookService
     participant Session as SessionService
     participant Factory as AiClientFactory
     participant AI as AiClient
-    participant GiteaAPI
+    participant GitAPI as Git API
 
-    User->>Gitea: Comment: "@ai_bot explain this"
-    Gitea->>Controller: POST /api/webhook/{secret}
+    User->>Git: Comment: "@ai_bot explain this"
+    Git->>Controller: POST /api/webhook/{secret}
     Controller->>BotWebhook: handleBotCommand(bot, payload)
-    BotWebhook->>GiteaAPI: addReaction(commentId, "eyes")
+    BotWebhook->>GitAPI: addReaction(commentId, "eyes")
     BotWebhook->>Session: getOrCreateSession(owner, repo, pr)
     Session-->>BotWebhook: session (with history)
     BotWebhook->>Factory: getClient(bot.aiIntegration)
@@ -365,7 +469,7 @@ sequenceDiagram
     AI-->>BotWebhook: response
     BotWebhook->>Session: addMessage("user", comment)
     BotWebhook->>Session: addMessage("assistant", response)
-    BotWebhook->>GiteaAPI: postComment(response)
+    BotWebhook->>GitAPI: postComment(response)
 ```
 
 ## Webhook Routing Flow

@@ -112,10 +112,20 @@ src/main/java/org/remus/giteabot/
 │   └── llamacpp/                   # llama.cpp implementation
 │       ├── LlamaCppClient.java
 │       └── LlamaCppProviderMetadata.java
-├── gitea/          # Webhook controller, API client, payload models
+├── gitea/          # Gitea integration
 │   ├── GiteaWebhookController.java
 │   ├── GiteaApiClient.java
 │   └── model/      # WebhookPayload, GiteaReview, GiteaReviewComment
+├── github/         # GitHub integration
+│   ├── GitHubWebhookController.java
+│   ├── GitHubApiClient.java
+│   └── model/      # GitHub-specific payload models
+├── repository/     # Repository provider abstraction
+│   ├── RepositoryApiClient.java       # Provider-agnostic interface
+│   ├── RepositoryProviderMetadata.java
+│   ├── RepositoryProviderRegistry.java
+│   ├── GiteaProviderMetadata.java
+│   └── GitHubProviderMetadata.java
 ├── agent/          # Issue implementation agent
 ├── review/         # CodeReviewService (orchestration)
 ├── session/        # ReviewSession, ConversationMessage, SessionService
@@ -130,7 +140,8 @@ prompts/            # System prompt templates
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /api/webhook/{secret}` | Per-bot webhook receiver |
+| `POST /api/webhook/{secret}` | Gitea webhook receiver |
+| `POST /api/github-webhook/{secret}` | GitHub webhook receiver |
 | `GET /dashboard` | Admin dashboard |
 | `GET /bots` | Bot management |
 | `GET /ai-integrations` | AI integration management |
@@ -161,3 +172,36 @@ To add support for a new AI provider:
    }
    ```
 4. The provider will automatically be discovered by `AiProviderRegistry` via Spring's component scanning
+
+## Adding a New Git Provider
+
+To add support for a new Git hosting platform:
+
+1. Add the new type to `RepositoryType` enum in `org.remus.giteabot.repository`
+2. Create a new package under `org.remus.giteabot.{provider}/`
+3. Implement `RepositoryApiClient`:
+   ```java
+   public class NewProviderApiClient implements RepositoryApiClient {
+       // Implement all interface methods...
+   }
+   ```
+4. Implement `RepositoryProviderMetadata`:
+   ```java
+   @Component
+   public class NewProviderMetadata implements RepositoryProviderMetadata {
+       @Override
+       public RepositoryType getProviderType() {
+           return RepositoryType.NEW_PROVIDER;
+       }
+       
+       @Override
+       public String getDefaultWebUrl() {
+           return "https://newprovider.example.com";
+       }
+       
+       // Implement all interface methods...
+   }
+   ```
+5. Create a webhook controller to handle provider-specific payload format
+6. The provider will automatically be discovered by `RepositoryProviderRegistry`
+

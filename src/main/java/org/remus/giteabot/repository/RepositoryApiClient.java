@@ -19,8 +19,11 @@ import java.util.Map;
  */
 public interface RepositoryApiClient {
 
-    /** Returns the base URL of the repository provider (e.g. {@code https://gitea.example.com}). */
+    /** Returns the API base URL of the repository provider (e.g. {@code https://api.github.com}). */
     String getBaseUrl();
+
+    /** Returns the web/clone URL of the repository provider (e.g. {@code https://github.com}). */
+    String getCloneUrl();
 
     /** Returns the authentication token used by this client. */
     String getToken();
