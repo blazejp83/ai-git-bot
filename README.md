@@ -61,6 +61,53 @@ Connect to your preferred Git hosting platform:
 - **Configurable System Prompts** — Select from built-in prompt templates or define custom prompts per bot
 - **Health Endpoint** — `/actuator/health` for monitoring and orchestration
 
+## Docker
+
+The bot is available as a Docker image on [Docker Hub](https://hub.docker.com/r/tmseidel/anthropic-gitea-bot).
+
+```yaml
+services:
+  app:
+    image: tmseidel/anthropic-gitea-bot:latest
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      GITEA_URL: ${GITEA_URL:-https://your-gitea-instance.com}
+      GITEA_TOKEN: ${GITEA_TOKEN}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
+      BOT_ALIAS: ${BOT_ALIAS:-@claude_bot}
+      DATABASE_URL: jdbc:postgresql://db:5432/giteabot
+      DATABASE_USERNAME: ${DATABASE_USERNAME:-giteabot}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-giteabot}
+    volumes:
+      - ./prompts:/app/prompts:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: giteabot
+      POSTGRES_USER: ${DATABASE_USERNAME:-giteabot}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-giteabot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USERNAME:-giteabot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+```
+
+
 ## Quick Start
 
 ### 1. Start the Application
