@@ -16,7 +16,7 @@ import java.util.Base64;
  * Service for encrypting and decrypting sensitive data like API keys.
  *
  * If APP_ENCRYPTION_KEY environment variable is set, values are encrypted using AES-GCM.
- * If not set, values are stored unencrypted (suitable for development, not recommended for production).
+ * If not set, values are stored as plain text (suitable for development, not recommended for production).
  */
 @Slf4j
 @Service
@@ -25,7 +25,6 @@ public class EncryptionService {
     private static final String ALGORITHM = "AES/GCM/NoPadding";
     private static final int GCM_TAG_LENGTH = 128;
     private static final int IV_LENGTH = 12;
-    private static final String ENCRYPTED_PREFIX = "ENC:";
 
     private final SecretKeySpec secretKey;
     private final SecureRandom secureRandom = new SecureRandom();
@@ -33,7 +32,7 @@ public class EncryptionService {
 
     public EncryptionService(@Value("${app.encryption-key:#{null}}") String encryptionKey) {
         if (encryptionKey == null || encryptionKey.isBlank()) {
-            log.warn("No APP_ENCRYPTION_KEY configured. API keys will be stored UNENCRYPTED. " +
+            log.warn("No APP_ENCRYPTION_KEY configured. API keys will be stored as plain text. " +
                     "Set APP_ENCRYPTION_KEY environment variable for production use.");
             this.secretKey = null;
             this.encryptionEnabled = false;
@@ -50,13 +49,16 @@ public class EncryptionService {
         }
     }
 
+    /**
+     * Encrypts the given plain text if encryption is enabled, otherwise returns it unchanged.
+     */
     public String encrypt(String plainText) {
         if (plainText == null || plainText.isBlank()) {
-            return null;
+            return plainText;
         }
 
         if (!encryptionEnabled) {
-            // No encryption - return plain text
+            // No encryption - return plain text as-is
             return plainText;
         }
 
@@ -73,35 +75,42 @@ public class EncryptionService {
             System.arraycopy(iv, 0, combined, 0, IV_LENGTH);
             System.arraycopy(encrypted, 0, combined, IV_LENGTH, encrypted.length);
 
-            return ENCRYPTED_PREFIX + Base64.getEncoder().encodeToString(combined);
+            return Base64.getEncoder().encodeToString(combined);
         } catch (Exception e) {
             log.error("Encryption failed", e);
             throw new IllegalStateException("Encryption failed", e);
         }
     }
 
+    /**
+     * Decrypts the given cipher text if encryption is enabled, otherwise returns it unchanged.
+     * If decryption fails (e.g., data wasn't encrypted or wrong key), returns the original value.
+     */
     public String decrypt(String cipherText) {
         if (cipherText == null || cipherText.isBlank()) {
-            return null;
-        }
-
-        // Check if value is encrypted (has prefix)
-        if (!cipherText.startsWith(ENCRYPTED_PREFIX)) {
-            // Not encrypted - return as-is (plain text storage)
             return cipherText;
         }
 
         if (!encryptionEnabled) {
-            throw new IllegalStateException("Cannot decrypt: APP_ENCRYPTION_KEY is not configured. " +
-                    "Set the same encryption key that was used when the data was encrypted.");
+            // No encryption configured - return as-is (plain text storage)
+            // Strip any legacy "ENC:" prefix if present
+            if (cipherText.startsWith("ENC:")) {
+                log.warn("Found encrypted data but no encryption key configured. " +
+                        "Data may be corrupted. Please configure APP_ENCRYPTION_KEY or re-enter the credentials.");
+                return cipherText.substring(4); // Return the base64 blob, which won't work but won't crash
+            }
+            return cipherText;
         }
 
+        // Strip legacy "ENC:" prefix if present
+        String data = cipherText.startsWith("ENC:") ? cipherText.substring(4) : cipherText;
+
         try {
-            String base64Data = cipherText.substring(ENCRYPTED_PREFIX.length());
-            byte[] combined = Base64.getDecoder().decode(base64Data);
+            byte[] combined = Base64.getDecoder().decode(data);
 
             if (combined.length < IV_LENGTH) {
-                throw new IllegalArgumentException("Ciphertext is too short");
+                // Not encrypted data - return as-is
+                return cipherText;
             }
 
             byte[] iv = new byte[IV_LENGTH];
@@ -115,9 +124,14 @@ public class EncryptionService {
 
             byte[] decrypted = cipher.doFinal(encrypted);
             return new String(decrypted, StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            // Not valid base64 - probably plain text, return as-is
+            log.debug("Value is not encrypted (not valid base64), returning as-is");
+            return cipherText;
         } catch (Exception e) {
-            log.error("Decryption failed - wrong encryption key or corrupted data", e);
-            throw new IllegalStateException("Decryption failed. Check APP_ENCRYPTION_KEY.", e);
+            // Decryption failed - might be plain text or wrong key
+            log.debug("Decryption failed, returning value as-is: {}", e.getMessage());
+            return cipherText;
         }
     }
 

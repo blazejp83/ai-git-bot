@@ -1,6 +1,8 @@
-# Gitea Instance Setup
+# Gitea Setup
 
-This guide walks you through preparing your Gitea instance to work with the AI Gitea Bot.
+This guide walks you through preparing your Gitea instance to work with the AI Code Review Bot.
+
+> **Note:** For GitHub setup, see [GitHub Setup](GITHUB_SETUP.md).
 
 ## 1. Create the Bot User
 
@@ -98,8 +100,10 @@ In the bot's web UI:
 
 1. **Create a Git Integration:**
    - Go to **Git Integrations → New Integration**
+   - Select **Gitea** as the provider type
    - Enter your Gitea URL (e.g., `https://gitea.example.com`)
    - Enter the API token you created above
+   - Click **Save**
 
 2. **Create or Edit a Bot:**
    - Set the **Username** to match the bot's Gitea username (e.g., `ai_bot`)

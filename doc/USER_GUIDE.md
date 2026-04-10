@@ -2,9 +2,9 @@
 
 ## Overview
 
-AI Gitea Bot provides a web-based management interface for creating and managing AI-powered code review bots. Each bot connects an AI provider (Anthropic, OpenAI, Ollama, or llama.cpp) with a Git provider (Gitea) and has its own unique webhook URL.
+AI Code Review Bot provides a web-based management interface for creating and managing AI-powered code review bots. Each bot connects an AI provider (Anthropic, OpenAI, Ollama, or llama.cpp) with a Git provider (Gitea, GitHub, or GitHub Enterprise) and has its own unique webhook URL.
 
-All AI and Gitea configuration is managed exclusively through the web UI and stored in the database. There are no environment variables for AI providers, Gitea connections, or bot usernames.
+All AI and Git configuration is managed exclusively through the web UI and stored in the database. There are no environment variables for AI providers, Git connections, or bot usernames.
 
 ## Getting Started
 
@@ -92,15 +92,45 @@ Click the **Delete** button on the integration's row. You'll be asked to confirm
 
 Git Integrations define connections to Git providers. Navigate to **Git Integrations** from the dashboard or navbar.
 
+### Supported Git Providers
+
+| Provider | Description | Documentation |
+|----------|-------------|---------------|
+| **Gitea** | Self-hosted Gitea instances | [Gitea Setup](GITEA_SETUP.md) |
+| **GitHub** | github.com or GitHub Enterprise Server | [GitHub Setup](GITHUB_SETUP.md) |
+
 ### Creating a Git Integration
 
 1. Click **New Integration**
 2. Fill in the form:
-   - **Name**: A descriptive name (e.g., "Gitea Production")
-   - **Provider Type**: Select the Git provider (currently only "gitea")
-   - **URL**: The Git server URL (e.g., `https://gitea.example.com`)
+   - **Name**: A descriptive name (e.g., "GitHub Production", "Gitea Internal")
+   - **Provider Type**: Select the Git provider:
+     
+     | Provider | Default URL | Token Format |
+     |----------|-------------|--------------|
+     | `gitea` | `https://gitea.example.com` | API Token |
+     | `github` | `https://github.com` | Personal Access Token (PAT) |
+     
+   - **URL**: The Git server URL:
+     - For Gitea: `https://gitea.example.com`
+     - For GitHub: `https://github.com` or `https://github.yourdomain.com` (Enterprise)
    - **Token**: Your Git API token (encrypted at rest)
 3. Click **Save**
+
+### Provider-Specific Notes
+
+#### Gitea
+
+- Uses `token <token>` authentication format
+- API endpoint is at the same base URL with `/api/v1` paths
+- See [Gitea Setup](GITEA_SETUP.md) for token creation instructions
+
+#### GitHub / GitHub Enterprise
+
+- Uses `Bearer <token>` authentication format
+- For github.com, the API is at `api.github.com`
+- For GitHub Enterprise, the API is at `<your-domain>/api/v3`
+- See [GitHub Setup](GITHUB_SETUP.md) for token creation instructions
 
 ### Managing Git Integrations
 
@@ -131,18 +161,29 @@ Bots are the core entities that connect an AI provider with a Git provider. Navi
 
 ### Webhook URL
 
-After creating a bot, a unique webhook URL is generated and displayed at the top of the edit form (e.g., `/api/webhook/abc123-def456-...`). Configure this URL in your Gitea repository's webhook settings:
+After creating a bot, a unique webhook URL is generated and displayed at the top of the edit form. The URL format depends on the Git provider:
 
-1. In Gitea, go to your repository → Settings → Webhooks
-2. Add a new webhook
-3. Set the **Target URL** to: `http://your-bot-server:8080/api/webhook/{webhook-secret}`
-4. Set **Content Type** to `application/json`
-5. Select events:
-   - ✅ Pull Request
-   - ✅ Issue Comment
-   - ✅ Pull Request Review
-   - ✅ Pull Request Comment
-   - ✅ Issues (if agent feature is enabled)
+| Provider | Webhook URL Format |
+|----------|-------------------|
+| Gitea | `/api/webhook/{webhook-secret}` |
+| GitHub | `/api/github-webhook/{webhook-secret}` |
+
+Configure this URL in your Git provider's webhook settings. See the provider-specific setup guides:
+
+- **Gitea**: [Gitea Webhook Setup](GITEA_SETUP.md#4-configure-webhooks)
+- **GitHub**: [GitHub Webhook Setup](GITHUB_SETUP.md#4-configure-webhooks)
+
+### Webhook Events
+
+Select the following events in your Git provider's webhook configuration:
+
+| Event | Gitea | GitHub | Description |
+|-------|-------|--------|-------------|
+| Pull Request | ✅ Pull Request | ✅ Pull requests | Triggers on PR open/update |
+| Issue Comment | ✅ Issue Comment | ✅ Issue comments | Bot mentions in comments |
+| PR Review | ✅ Pull Request Review | ✅ Pull request reviews | Review submissions |
+| PR Comment | ✅ Pull Request Comment | ✅ Pull request review comments | Inline code comments |
+| Issues | ✅ Issues | ✅ Issues | Agent feature (optional) |
 
 ### Bot Statistics
 

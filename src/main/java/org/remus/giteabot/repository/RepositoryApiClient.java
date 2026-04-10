@@ -9,7 +9,8 @@ import java.util.Map;
 /**
  * Provider-agnostic interface for repository operations (pull requests, reviews,
  * comments, branches, files).  Implementations exist for Gitea
- * ({@link org.remus.giteabot.gitea.GiteaApiClient}), with future support for
+ * ({@link org.remus.giteabot.gitea.GiteaApiClient}) and GitHub
+ * ({@link org.remus.giteabot.github.GitHubApiClient}), with future support for
  * GitLab, Bitbucket, etc.
  * <p>
  * Each bot receives its own {@code RepositoryApiClient} instance, pre-configured
@@ -18,8 +19,11 @@ import java.util.Map;
  */
 public interface RepositoryApiClient {
 
-    /** Returns the base URL of the repository provider (e.g. {@code https://gitea.example.com}). */
+    /** Returns the API base URL of the repository provider (e.g. {@code https://api.github.com}). */
     String getBaseUrl();
+
+    /** Returns the web/clone URL of the repository provider (e.g. {@code https://github.com}). */
+    String getCloneUrl();
 
     /** Returns the authentication token used by this client. */
     String getToken();

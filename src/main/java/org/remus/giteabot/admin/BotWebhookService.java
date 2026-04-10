@@ -8,14 +8,12 @@ import org.remus.giteabot.agent.validation.ToolExecutionService;
 import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.config.AgentConfigProperties;
 import org.remus.giteabot.config.PromptService;
-import org.remus.giteabot.gitea.GiteaApiClient;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 import org.remus.giteabot.repository.RepositoryApiClient;
 import org.remus.giteabot.review.CodeReviewService;
 import org.remus.giteabot.session.SessionService;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
 
 /**
  * Handles webhook events for persisted {@link Bot} entities using their
@@ -198,7 +196,7 @@ public class BotWebhookService {
      */
     private CodeReviewService createCodeReviewService(Bot bot) {
         AiClient aiClient = aiClientFactory.getClient(bot.getAiIntegration());
-        RepositoryApiClient repoClient = createRepositoryClient(bot);
+        RepositoryApiClient repoClient = giteaClientFactory.getApiClient(bot.getGitIntegration());
         return new CodeReviewService(repoClient, aiClient, promptService, sessionService, bot.getUsername());
     }
 
@@ -207,15 +205,8 @@ public class BotWebhookService {
      */
     private IssueImplementationService createIssueImplementationService(Bot bot) {
         AiClient aiClient = aiClientFactory.getClient(bot.getAiIntegration());
-        RepositoryApiClient repoClient = createRepositoryClient(bot);
+        RepositoryApiClient repoClient = giteaClientFactory.getApiClient(bot.getGitIntegration());
         return new IssueImplementationService(repoClient, aiClient, promptService, agentConfig,
                 agentSessionService, toolExecutionService, diffApplyService);
-    }
-
-    private RepositoryApiClient createRepositoryClient(Bot bot) {
-        GitIntegration gitIntegration = bot.getGitIntegration();
-        RestClient restClient = giteaClientFactory.getClient(gitIntegration);
-        String token = giteaClientFactory.getDecryptedToken(gitIntegration);
-        return new GiteaApiClient(restClient, gitIntegration.getUrl(), token);
     }
 }

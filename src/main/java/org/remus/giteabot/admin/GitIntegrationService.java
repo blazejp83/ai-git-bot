@@ -32,8 +32,8 @@ public class GitIntegrationService {
 
     public GitIntegration save(GitIntegration integration) {
         String token = integration.getToken();
-        if (token != null && !token.isBlank() && !token.startsWith("ENC:")) {
-            integration.setToken("ENC:" + encryptionService.encrypt(token));
+        if (token != null && !token.isBlank()) {
+            integration.setToken(encryptionService.encrypt(token));
         }
         return gitIntegrationRepository.save(integration);
     }
@@ -47,9 +47,6 @@ public class GitIntegrationService {
         if (token == null || token.isBlank()) {
             return null;
         }
-        if (token.startsWith("ENC:")) {
-            return encryptionService.decrypt(token.substring(4));
-        }
-        return token;
+        return encryptionService.decrypt(token);
     }
 }
