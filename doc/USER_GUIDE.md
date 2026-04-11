@@ -205,7 +205,7 @@ Select the following events in your Git provider's webhook configuration:
 | Comments | ✅ Issue Comment | ✅ Issue comments | ✅ Comments | ✅ PR: Comment created | Bot mentions in comments |
 | PR Review | ✅ Pull Request Review | ✅ Pull request reviews | — | — | Review submissions |
 | PR Comment | ✅ Pull Request Comment | ✅ Pull request review comments | — | — | Inline code comments |
-| Issues | ✅ Issues | ✅ Issues | Agent feature (optional) |
+| Issues | ✅ Issues | ✅ Issues | ✅ Issues events | — | Agent feature (optional) |
 
 ### Bot Statistics
 
