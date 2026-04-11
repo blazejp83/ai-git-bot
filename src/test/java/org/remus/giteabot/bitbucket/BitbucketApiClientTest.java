@@ -21,10 +21,6 @@ class BitbucketApiClientTest {
         return RepositoryCredentials.of(
                 "https://api.bitbucket.org/2.0", "https://bitbucket.org", "bb_token");
     }
-    private static RepositoryCredentials creds2() {
-        return RepositoryCredentials.of(
-                "https://api.bitbucket.org/2.0", "https://bitbucket.org", "tom.seidel@o2online.de","ATATT3xFfGF0PMyU7wY5KwQVYrUgq0j3EzGKp8MJYWbl-1OuBZfhKIK26tv8e6PPFU9XQOmu_jldTjlGL6ePX3dHasZz0ldwDnPt8-4hEcpHRVW8d764Co1c6F9w94e-riWSPYVfM844bjeXCZ4Kkz9Vi30D-2SREkaVEKMe5Dsyr_SHasvs7cI=8AD549E5");
-    }
 
     @Test
     void implementsRepositoryApiClient() {
