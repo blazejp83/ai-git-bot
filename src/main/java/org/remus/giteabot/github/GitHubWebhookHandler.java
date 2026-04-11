@@ -2,17 +2,16 @@ package org.remus.giteabot.github;
 
 import lombok.extern.slf4j.Slf4j;
 import org.remus.giteabot.admin.Bot;
-import org.remus.giteabot.admin.BotService;
 import org.remus.giteabot.admin.BotWebhookService;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
 
 /**
- * Webhook controller for GitHub events.
+ * Handler for GitHub webhook events.
  * <p>
  * Receives GitHub webhook payloads and translates them into the common
  * {@link WebhookPayload} model used by the rest of the application, then
@@ -23,60 +22,39 @@ import java.util.Map;
  * pull_request_review_comment, issues.
  */
 @Slf4j
-@RestController
-@RequestMapping("/api/github-webhook")
-public class GitHubWebhookController {
+@Component
+public class GitHubWebhookHandler {
 
-    private final BotService botService;
     private final BotWebhookService botWebhookService;
 
-    public GitHubWebhookController(BotService botService,
-                                   BotWebhookService botWebhookService) {
-        this.botService = botService;
+    public GitHubWebhookHandler(BotWebhookService botWebhookService) {
         this.botWebhookService = botWebhookService;
     }
 
     /**
-     * Per-bot GitHub webhook endpoint. Routes by webhook secret like the Gitea controller.
-     * GitHub event type is determined from the {@code X-GitHub-Event} header.
+     * Handles a GitHub webhook event for the given bot.
+     *
+     * @param bot       the bot to process the webhook for
+     * @param eventType the GitHub event type from X-GitHub-Event header
+     * @param payload   the raw webhook payload
+     * @return response indicating the result of webhook processing
      */
-    @PostMapping("/{webhookSecret}")
-    public ResponseEntity<String> handleGitHubWebhook(
-            @PathVariable String webhookSecret,
-            @RequestHeader(value = "X-GitHub-Event", required = false) String eventType,
-            @RequestBody Map<String, Object> payload) {
-        return botService.findByWebhookSecret(webhookSecret)
-                .map(bot -> {
-                    if (!bot.isEnabled()) {
-                        log.debug("Bot '{}' is disabled, ignoring GitHub webhook", bot.getName());
-                        return ResponseEntity.ok("bot disabled");
-                    }
-                    botService.incrementWebhookCallCount(bot);
-                    log.info("GitHub webhook received for bot '{}' (event={}, git={})",
-                            bot.getName(), eventType, bot.getGitIntegration().getName());
-                    return handleEvent(bot, eventType, payload);
-                })
-                .orElseGet(() -> {
-                    log.warn("No bot found for webhook secret: {}...",
-                            webhookSecret.substring(0, Math.min(8, webhookSecret.length())));
-                    return ResponseEntity.notFound().build();
-                });
-    }
-
-    @SuppressWarnings("unchecked")
-    private ResponseEntity<String> handleEvent(Bot bot, String eventType, Map<String, Object> raw) {
+    public ResponseEntity<String> handleWebhook(Bot bot, String eventType, Map<String, Object> payload) {
         if (eventType == null) {
-            log.warn("Missing X-GitHub-Event header");
+            log.warn("Missing X-GitHub-Event header for GitHub webhook");
             return ResponseEntity.ok("ignored");
         }
 
-        WebhookPayload payload = translatePayload(eventType, raw);
-        if (payload == null) {
+        log.debug("Processing GitHub event: {} for bot '{}'", eventType, bot.getName());
+
+        WebhookPayload webhookPayload = translatePayload(eventType, payload);
+        if (webhookPayload == null) {
+            log.warn("Could not translate GitHub payload for event type: {}", eventType);
             return ResponseEntity.ok("ignored");
         }
 
         // Ignore events triggered by the bot itself
-        if (botWebhookService.isBotUser(bot, payload)) {
+        if (botWebhookService.isBotUser(bot, webhookPayload)) {
             log.debug("Ignoring GitHub webhook event from bot's own user '{}'", bot.getUsername());
             return ResponseEntity.ok("ignored");
         }
@@ -84,11 +62,11 @@ public class GitHubWebhookController {
         String botAlias = botWebhookService.getBotAlias(bot);
 
         return switch (eventType) {
-            case "pull_request" -> handlePullRequestEvent(bot, payload);
-            case "issue_comment" -> handleIssueCommentEvent(bot, payload, botAlias);
-            case "pull_request_review" -> handlePullRequestReviewEvent(bot, payload);
-            case "pull_request_review_comment" -> handlePullRequestReviewCommentEvent(bot, payload, botAlias);
-            case "issues" -> handleIssuesEvent(bot, payload);
+            case "pull_request" -> handlePullRequestEvent(bot, webhookPayload);
+            case "issue_comment" -> handleIssueCommentEvent(bot, webhookPayload, botAlias);
+            case "pull_request_review" -> handlePullRequestReviewEvent(bot, webhookPayload);
+            case "pull_request_review_comment" -> handlePullRequestReviewCommentEvent(bot, webhookPayload, botAlias);
+            case "issues" -> handleIssuesEvent(bot, webhookPayload);
             default -> {
                 log.debug("Unhandled GitHub event type: {}", eventType);
                 yield ResponseEntity.ok("ignored");
@@ -166,10 +144,6 @@ public class GitHubWebhookController {
 
     // ---- GitHub → WebhookPayload translation ----
 
-    /**
-     * Translates a raw GitHub webhook JSON payload into the common {@link WebhookPayload} model.
-     * Returns {@code null} if the event type is unsupported.
-     */
     @SuppressWarnings("unchecked")
     WebhookPayload translatePayload(String eventType, Map<String, Object> raw) {
         return switch (eventType) {
@@ -230,7 +204,6 @@ public class GitHubWebhookController {
         payload.setComment(extractReviewComment((Map<String, Object>) raw.get("comment")));
         if (payload.getPullRequest() != null) {
             payload.setNumber(payload.getPullRequest().getNumber());
-            // Build a synthetic issue for consistency with the Gitea webhook model
             WebhookPayload.Issue issue = new WebhookPayload.Issue();
             issue.setNumber(payload.getPullRequest().getNumber());
             issue.setTitle(payload.getPullRequest().getTitle());
@@ -340,21 +313,18 @@ public class GitHubWebhookController {
         i.setNumber(toLong(issue.get("number")));
         i.setTitle((String) issue.get("title"));
         i.setBody((String) issue.get("body"));
-        // GitHub indicates a PR-linked issue via "pull_request" key presence
         if (issue.containsKey("pull_request") && issue.get("pull_request") != null) {
             WebhookPayload.IssuePullRequest ipr = new WebhookPayload.IssuePullRequest();
             Map<String, Object> prLink = (Map<String, Object>) issue.get("pull_request");
             ipr.setMerged(prLink.get("merged_at") != null ? Boolean.TRUE : null);
             i.setPullRequest(ipr);
         }
-        // Assignee
         Map<String, Object> assignee = (Map<String, Object>) issue.get("assignee");
         if (assignee != null) {
             WebhookPayload.Owner a = new WebhookPayload.Owner();
             a.setLogin((String) assignee.get("login"));
             i.setAssignee(a);
         }
-        // Assignees
         List<Map<String, Object>> assignees = (List<Map<String, Object>>) issue.get("assignees");
         if (assignees != null) {
             i.setAssignees(assignees.stream().map(am -> {
@@ -376,12 +346,6 @@ public class GitHubWebhookController {
         return r;
     }
 
-    // ---- Action mapping helpers ----
-
-    /**
-     * Maps GitHub PR action names to Gitea-compatible action names.
-     * GitHub uses "synchronize" where Gitea uses "synchronized".
-     */
     private String mapAction(String githubAction) {
         if ("synchronize".equals(githubAction)) {
             return "synchronized";
@@ -389,10 +353,6 @@ public class GitHubWebhookController {
         return githubAction;
     }
 
-    /**
-     * Maps GitHub review event action to Gitea-compatible action.
-     * GitHub uses "submitted"; Gitea uses "reviewed".
-     */
     private String mapReviewAction(String githubAction) {
         if ("submitted".equals(githubAction)) {
             return "reviewed";
@@ -407,3 +367,4 @@ public class GitHubWebhookController {
         return null;
     }
 }
+
