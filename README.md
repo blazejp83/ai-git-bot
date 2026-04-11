@@ -1,6 +1,5 @@
 # AI-Git-Bot
 
-[![Build](https://github.com/tmseidel/ai-git-bot/actions/workflows/build.yml/badge.svg)](https://github.com/tmseidel/ai-git-bot/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/github/license/tmseidel/ai-git-bot)](LICENSE)
 [![Docker Pulls](https://img.shields.io/docker/pulls/tmseidel/ai-git-bot)](https://hub.docker.com/r/tmseidel/ai-git-bot)
 [![GitHub release](https://img.shields.io/github/v/release/tmseidel/ai-git-bot)](https://github.com/tmseidel/ai-git-bot/releases)
