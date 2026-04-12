@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security">
+<body>
+<div th:replace="~{layout :: layout(${bot.id != null ? 'Edit Bot' : 'New Bot'}, ~{::pageContent})}">
+    <div th:fragment="pageContent">
+
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>
+                <i class="bi bi-cpu"></i>
+                <span th:if="${bot.id != null}">Edit Bot</span>
+                <span th:if="${bot.id == null}">New Bot</span>
+            </h2>
+        </div>
+
+        <!-- Webhook URL for existing bots -->
+        <div th:if="${bot.id != null and bot.webhookPath != null}" class="alert alert-info">
+            <i class="bi bi-link-45deg"></i>
+            <strong>Webhook URL:</strong>
+            <code th:text="${bot.webhookPath}"></code>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                <form th:action="@{/bots/save}" method="post" th:object="${bot}">
+                    <input type="hidden" th:if="${bot.id != null}" th:field="*{id}"/>
+                    <input type="hidden" th:if="${bot.id != null}" th:field="*{webhookSecret}"/>
+
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label for="name" class="form-label">Name</label>
+                            <input type="text" class="form-control" id="name" th:field="*{name}"
+                                   placeholder="e.g. Code Review Bot" required/>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="username" class="form-label">Username</label>
+                            <input type="text" class="form-control" id="username" th:field="*{username}"
+                                   placeholder="Bot username on the Git platform" required/>
+                        </div>
+
+                        <div class="col-12">
+                            <label for="prompt" class="form-label">System Prompt</label>
+                            <div class="mb-2">
+                                <label for="promptTemplate" class="form-label text-muted small">Load from template:</label>
+                                <select class="form-select form-select-sm" id="promptTemplate" style="max-width: 300px;">
+                                    <option value="">-- Select a template --</option>
+                                    <option th:each="template : ${promptTemplates}"
+                                            th:value="${template.key}"
+                                            th:text="${template.key}"></option>
+                                </select>
+                            </div>
+                            <textarea class="form-control" id="prompt" th:field="*{prompt}"
+                                      rows="8" placeholder="System prompt for the AI bot..."></textarea>
+                            <div class="form-text">
+                                The system prompt instructs the AI how to behave during code reviews.
+                            </div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label for="aiIntegrationId" class="form-label">AI Integration</label>
+                            <select class="form-select" id="aiIntegrationId" name="aiIntegrationId" required>
+                                <option value="">Select an AI integration...</option>
+                                <option th:each="ai : ${aiIntegrations}"
+                                        th:value="${ai.id}" th:text="${ai.name}"
+                                        th:selected="${bot.aiIntegration != null and bot.aiIntegration.id == ai.id}">
+                                </option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="gitIntegrationId" class="form-label">Git Integration</label>
+                            <select class="form-select" id="gitIntegrationId" name="gitIntegrationId" required>
+                                <option value="">Select a Git integration...</option>
+                                <option th:each="git : ${gitIntegrations}"
+                                        th:value="${git.id}" th:text="${git.name}"
+                                        th:selected="${bot.gitIntegration != null and bot.gitIntegration.id == git.id}">
+                                </option>
+                            </select>
+                        </div>
+
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mt-3">
+                                <input class="form-check-input" type="checkbox" id="enabled"
+                                       th:field="*{enabled}"/>
+                                <label class="form-check-label" for="enabled">Enabled</label>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mt-3">
+                                <input class="form-check-input" type="checkbox" id="agentEnabled"
+                                       th:field="*{agentEnabled}"/>
+                                <label class="form-check-label" for="agentEnabled">Agent Enabled</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-lg"></i> Save
+                        </button>
+                        <a th:href="@{/bots}" class="btn btn-secondary ms-2">
+                            <i class="bi bi-x-lg"></i> Cancel
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <script th:inline="javascript">
+            /*<![CDATA[*/
+            const promptTemplates = /*[[${promptTemplates}]]*/ {};
+
+            document.addEventListener('DOMContentLoaded', function() {
+                const templateSelect = document.getElementById('promptTemplate');
+                const promptTextarea = document.getElementById('prompt');
+
+                templateSelect.addEventListener('change', function() {
+                    const selectedTemplate = this.value;
+                    if (selectedTemplate && promptTemplates[selectedTemplate]) {
+                        // Ask for confirmation if there's existing content
+                        if (promptTextarea.value.trim() &&
+                            !confirm('This will replace the current prompt. Continue?')) {
+                            this.value = '';
+                            return;
+                        }
+                        promptTextarea.value = promptTemplates[selectedTemplate];
+                    }
+                });
+            });
+            /*]]>*/
+        </script>
+
+    </div>
+</div>
+</body>
+</html>

@@ -1,57 +1,52 @@
-# AI Gitea Bot
+# AI-Git-Bot
 
-AI-powered code review bot that connects your Gitea instance with multiple AI providers — Anthropic Claude, OpenAI, or Ollama (local LLMs).
+> **Half Bot, half Agent** — The intelligent Gateway between Git platforms and AI providers. 🤖🧠
+
+AI-Git-Bot is a lightweight, self-hostable **Gateway application** for AI-powered code reviews and autonomous issue implementation. Connects **Gitea, GitHub, GitHub Enterprise, GitLab, and Bitbucket Cloud** with **Anthropic Claude, OpenAI, Ollama (local LLMs), and llama.cpp** — all managed through a **web-based UI**.
 
 ## Features
 
+- **Gateway Architecture** — Central hub connecting any Git platform with any AI provider
+- **Web-Based Management** — Configure bots, AI providers, and Git connections through a browser UI
+- **Multi-Bot Support** — Create multiple bots with different AI providers, prompts, and personas
+- **Multiple Git Providers** — Gitea, GitHub, GitHub Enterprise, GitLab, and Bitbucket Cloud support
+- **Multiple AI Providers** — Anthropic, OpenAI, Ollama, and llama.cpp support
 - **Automatic PR Reviews** — Reviews diffs when Pull Requests are opened or updated
-- **Multiple AI Providers** — Anthropic, OpenAI, and Ollama support
-- **Interactive Bot Commands** — Mention `@ai_bot` in PR comments to ask questions
-- **Inline Review Comments** — Mention the bot in code-level review comments for context-aware answers
-- **Session Management** — Maintains conversation history per PR for follow-up interactions
-- **Configurable Prompts** — Define multiple review profiles via markdown files
+- **Interactive Bot Commands** — Mention the bot in PR comments to ask questions
+- **Inline Review Comments** — Context-aware answers to code-level review comments
+- **Issue Implementation Agent** — Assign the bot to an issue for autonomous code generation
+- **AI-Driven Code Validation** — Agent validates generated code with build tools (Maven, Gradle, npm, etc.)
+- **Session Management** — Maintains conversation history per PR
 - **Smart Diff Chunking** — Splits large diffs into chunks with retry on token limits
-- **Issue Implementation Agent** — Assign the bot to an issue for autonomous code generation and PR creation
+- **Encrypted Secrets** — API keys and tokens are encrypted at rest (AES-256-GCM)
+- **Self-Host Friendly** — Run everything on-premise with local LLMs for compliance requirements
 
 ## Quick Start
 
 ```bash
-docker run -d \
-  -p 8080:8080 \
-  -e GITEA_URL=https://your-gitea-instance.com \
-  -e GITEA_TOKEN=your-gitea-api-token \
-  -e AI_PROVIDER=anthropic \
-  -e AI_ANTHROPIC_API_KEY=your-anthropic-api-key \
-  -e DATABASE_URL=jdbc:postgresql://your-db-host:5432/giteabot \
-  -e DATABASE_USERNAME=giteabot \
-  -e DATABASE_PASSWORD=your-db-password \
-  -v ./prompts:/app/prompts:ro \
-  ai-gitea-bot
+docker compose up -d
 ```
 
-Or with Docker Compose (includes PostgreSQL):
+Then:
+1. Navigate to `http://localhost:8080`
+2. Create your admin account
+3. Configure AI and Git integrations via the web UI
+4. Create a bot and configure webhooks in your Git provider
+
+## Docker Compose
 
 ```yaml
-# docker-compose.yml
 services:
   app:
-    image: ai-gitea-bot:latest
+    image: tmseidel/ai-git-bot:latest
     ports:
       - "8080:8080"
     environment:
       SPRING_PROFILES_ACTIVE: docker
-      GITEA_URL: https://your-gitea-instance.com
-      GITEA_TOKEN: your-gitea-api-token
-      AI_PROVIDER: anthropic             # or "openai" or "ollama"
-      AI_MODEL: claude-sonnet-4-20250514
-      AI_MAX_TOKENS: 4096
-      AI_ANTHROPIC_API_KEY: your-api-key
-      BOT_USERNAME: "ai_bot"
       DATABASE_URL: jdbc:postgresql://db:5432/giteabot
       DATABASE_USERNAME: giteabot
       DATABASE_PASSWORD: change-me
-    volumes:
-      - ./prompts:/app/prompts:ro
+      APP_ENCRYPTION_KEY: your-secure-encryption-key
     depends_on:
       db:
         condition: service_healthy
@@ -76,59 +71,63 @@ volumes:
   pgdata:
 ```
 
-Then run:
+## Supported AI Providers
 
-```bash
-docker compose up -d
-```
+| Provider | Default API URL | Suggested Models |
+|----------|-----------------|------------------|
+| **Anthropic** | `https://api.anthropic.com` | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5-20251001 |
+| **OpenAI** | `https://api.openai.com` | gpt-5.4, gpt-5.3-codex, gpt-5.1-codex-max, gpt-5-codex |
+| **Ollama** | `http://localhost:11434` | User-configured local models |
+| **llama.cpp** | `http://localhost:8081` | User-configured GGUF models |
+
+All AI configuration (API URLs, keys, models) is managed through the web UI — no environment variables needed.
+
+## Supported Git Providers
+
+| Provider | Description |
+|----------|-------------|
+| **Gitea** | Self-hosted Gitea instances |
+| **GitHub** | github.com |
+| **GitHub Enterprise** | Self-hosted GitHub Enterprise Server |
+| **GitLab** | gitlab.com and self-managed GitLab CE/EE |
+| **Bitbucket Cloud** | bitbucket.org |
 
 ## Environment Variables
 
-### Required
-
-| Variable | Description |
-|---|---|
-| `GITEA_URL` | URL of your Gitea instance |
-| `GITEA_TOKEN` | API token for the bot's Gitea user account |
-
-### AI Provider
-
 | Variable | Default | Description |
-|---|---|---|
-| `AI_PROVIDER` | `anthropic` | AI provider: `anthropic`, `openai`, or `ollama` |
-| `AI_MODEL` | `claude-sonnet-4-20250514` | Model name for the selected provider |
-| `AI_MAX_TOKENS` | `4096` | Max tokens per response |
-| `AI_ANTHROPIC_API_KEY` | | Anthropic API key (when using `anthropic`) |
-| `AI_OPENAI_API_KEY` | | OpenAI API key (when using `openai`) |
-| `AI_OLLAMA_API_URL` | `http://localhost:11434` | Ollama URL (when using `ollama`) |
-
-### Optional
-
-| Variable | Default | Description |
-|---|---|---|
-| `BOT_USERNAME` | `ai_bot` | Gitea username of the bot account (mention alias `@ai_bot` is derived automatically) |
-| `AGENT_ENABLED` | `false` | Enable the autonomous issue implementation agent |
-| `AGENT_MAX_FILES` | `10` | Maximum number of files the agent can modify per issue |
-| `AGENT_BRANCH_PREFIX` | `ai-agent/` | Prefix for branches created by the agent |
+|----------|---------|-------------|
+| `APP_ENCRYPTION_KEY` | *(random)* | Encryption key for API keys/tokens. Set for persistence across restarts. |
 | `DATABASE_URL` | `jdbc:postgresql://db:5432/giteabot` | JDBC connection URL |
 | `DATABASE_USERNAME` | `giteabot` | Database username |
-| `DATABASE_PASSWORD` | `giteabot` | Database password |
-| `PROMPTS_DIR` | `/app/prompts` | Directory for prompt markdown files |
+| `DATABASE_PASSWORD` | | Database password |
 
-## Gitea Webhook Setup
+### Agent Configuration (Optional)
 
-1. In your Gitea repository or organization, go to **Settings → Webhooks → Add Webhook → Gitea**
-2. Set **Target URL** to `http://<bot-host>:8080/api/webhook`
-3. Select events: **Pull Request**, **Issue Comment**, **Pull Request Review**, **Pull Request Comment**
-4. Save the webhook
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_MAX_FILES` | `20` | Maximum files the agent can modify per issue |
+| `AGENT_MAX_TOKENS` | `32768` | Maximum tokens for AI responses in agent mode |
+| `AGENT_BRANCH_PREFIX` | `ai-agent/` | Prefix for branches created by the agent |
 
-To use a specific prompt profile: `http://<bot-host>:8080/api/webhook?prompt=security`
+## Webhook Setup
+
+Each bot gets a unique webhook URL displayed in the web UI. The same URL format works for all Git providers:
+
+- `/api/webhook/{webhook-secret}`
+
+### Supported Events per Platform
+
+| Event | Gitea | GitHub | GitLab | Bitbucket |
+|-------|-------|--------|--------|-----------|
+| Pull Request | ✅ | ✅ | ✅ Merge request events | ✅ PR: Created/Updated |
+| Comments | ✅ Issue Comment | ✅ Issue comments | ✅ Comments | ✅ PR: Comment created |
+| Issues (Agent) | ✅ | ✅ | ✅ Issues events | — |
 
 ## Volumes
 
 | Path | Description |
-|---|---|
-| `/app/prompts` | System prompt markdown files (mount read-only) |
+|------|-------------|
+| `/app/prompts` | System prompt templates (optional, mount read-only) |
 
 ## Health Check
 
@@ -140,11 +139,15 @@ Built-in health check runs every 30s with a 30s start period.
 
 ## Source Code & Documentation
 
-- [GitHub Repository](https://github.com/your-org/ai-gitea-bot)
-- [Architecture](https://github.com/your-org/ai-gitea-bot/blob/main/doc/ARCHITECTURE.md)
-- [Gitea Setup Guide](https://github.com/your-org/ai-gitea-bot/blob/main/doc/GITEA_SETUP.md)
-- [Deployment Guide](https://github.com/your-org/ai-gitea-bot/blob/main/doc/DEPLOYMENT.md)
-- [Using Ollama](https://github.com/your-org/ai-gitea-bot/blob/main/doc/OLLAMA.md)
+- [GitHub Repository](https://github.com/tmseidel/anthropic-gitea-bot)
+- [User Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/USER_GUIDE.md)
+- [Architecture](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/ARCHITECTURE.md)
+- [Agent Documentation](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/AGENT.md)
+- [Gitea Setup Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/GITEA_SETUP.md)
+- [GitHub Setup Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/GITHUB_SETUP.md)
+- [GitLab Setup Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/GITLAB_SETUP.md)
+- [Bitbucket Setup Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/BITBUCKET_SETUP.md)
+- [Deployment Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/DEPLOYMENT.md)
 
 ## License
 

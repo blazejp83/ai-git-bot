@@ -1,17 +1,18 @@
 package org.remus.giteabot.review;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.ai.AiMessage;
-import org.remus.giteabot.config.BotConfigProperties;
 import org.remus.giteabot.config.PromptService;
-import org.remus.giteabot.gitea.GiteaApiClient;
+import org.remus.giteabot.repository.RepositoryApiClient;
 import org.remus.giteabot.gitea.model.GiteaReview;
 import org.remus.giteabot.gitea.model.GiteaReviewComment;
+import org.remus.giteabot.repository.model.Review;
+import org.remus.giteabot.repository.model.ReviewComment;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 import org.remus.giteabot.session.ReviewSession;
 import org.remus.giteabot.session.SessionService;
@@ -38,7 +39,7 @@ import static org.mockito.Mockito.when;
 class CodeReviewServiceTest {
 
     @Mock
-    private GiteaApiClient giteaApiClient;
+    private RepositoryApiClient repositoryClient;
 
     @Mock
     private AiClient aiClient;
@@ -49,23 +50,23 @@ class CodeReviewServiceTest {
     @Mock
     private SessionService sessionService;
 
-    @Mock
-    private BotConfigProperties botConfig;
-
-    @InjectMocks
     private CodeReviewService codeReviewService;
+
+    @BeforeEach
+    void setUp() {
+        codeReviewService = new CodeReviewService(repositoryClient, aiClient,
+                promptService, sessionService, "ai_bot");
+    }
 
     @Test
     void reviewPullRequest_postsReview() {
         WebhookPayload payload = createTestPayload();
         ReviewSession session = new ReviewSession("testowner", "testrepo", 1L, null);
 
-        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test system prompt");
-        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
         when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, null)).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
-        when(giteaApiClient.getPullRequestDiff("testowner", "testrepo", 1L, null))
+        when(repositoryClient.getPullRequestDiff("testowner", "testrepo", 1L))
                 .thenReturn("diff --git a/file.txt b/file.txt\n+new line");
         when(aiClient.reviewDiff(eq("Test PR"), eq("Test body"), anyString(),
                 eq("test system prompt"), isNull()))
@@ -73,8 +74,8 @@ class CodeReviewServiceTest {
 
         codeReviewService.reviewPullRequest(payload, null);
 
-        verify(giteaApiClient).postReviewComment(
-                eq("testowner"), eq("testrepo"), eq(1L), contains("Looks good!"), isNull());
+        verify(repositoryClient).postReviewComment(
+                eq("testowner"), eq("testrepo"), eq(1L), contains("Looks good!"));
         verify(sessionService).getOrCreateSession("testowner", "testrepo", 1L, null);
         verify(sessionService, times(2)).addMessage(any(), anyString(), anyString());
     }
@@ -83,14 +84,13 @@ class CodeReviewServiceTest {
     void reviewPullRequest_emptyDiff_skipsReview() {
         WebhookPayload payload = createTestPayload();
 
-        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
-        when(giteaApiClient.getPullRequestDiff("testowner", "testrepo", 1L, null))
+        when(repositoryClient.getPullRequestDiff("testowner", "testrepo", 1L))
                 .thenReturn("");
 
         codeReviewService.reviewPullRequest(payload, null);
 
         verify(aiClient, never()).reviewDiff(anyString(), anyString(), anyString(), anyString(), anyString());
-        verify(giteaApiClient, never()).postReviewComment(anyString(), anyString(), anyLong(), anyString(), anyString());
+        verify(repositoryClient, never()).postReviewComment(anyString(), anyString(), anyLong(), anyString());
     }
 
     @Test
@@ -98,21 +98,19 @@ class CodeReviewServiceTest {
         WebhookPayload payload = createTestPayload();
         ReviewSession session = new ReviewSession("testowner", "testrepo", 1L, "security");
 
-        when(promptService.resolveGiteaToken(eq("security"), isNull())).thenReturn("custom-token");
         when(promptService.getSystemPrompt("security")).thenReturn("You are a security reviewer.");
-        when(promptService.resolveModel(eq("security"), isNull())).thenReturn("claude-opus-4-20250514");
         when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, "security")).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
-        when(giteaApiClient.getPullRequestDiff("testowner", "testrepo", 1L, "custom-token"))
+        when(repositoryClient.getPullRequestDiff("testowner", "testrepo", 1L))
                 .thenReturn("diff --git a/file.txt b/file.txt\n+new line");
         when(aiClient.reviewDiff(eq("Test PR"), eq("Test body"), anyString(),
-                eq("You are a security reviewer."), eq("claude-opus-4-20250514")))
+                eq("You are a security reviewer."), isNull()))
                 .thenReturn("Security looks good!");
 
         codeReviewService.reviewPullRequest(payload, "security");
 
-        verify(giteaApiClient).postReviewComment(
-                eq("testowner"), eq("testrepo"), eq(1L), contains("Security looks good!"), eq("custom-token"));
+        verify(repositoryClient).postReviewComment(
+                eq("testowner"), eq("testrepo"), eq(1L), contains("Security looks good!"));
     }
 
     @Test
@@ -122,16 +120,14 @@ class CodeReviewServiceTest {
         session.addMessage("user", "Previous question");
         session.addMessage("assistant", "Previous answer");
 
-        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
-        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
         when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, null)).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
         when(sessionService.toAiMessages(session)).thenReturn(List.of(
                 AiMessage.builder().role("user").content("Previous question").build(),
                 AiMessage.builder().role("assistant").content("Previous answer").build()
         ));
-        when(giteaApiClient.getPullRequestDiff("testowner", "testrepo", 1L, null))
+        when(repositoryClient.getPullRequestDiff("testowner", "testrepo", 1L))
                 .thenReturn("new diff content");
         when(aiClient.chat(anyList(), anyString(), eq("test prompt"), isNull()))
                 .thenReturn("Updated review");
@@ -149,9 +145,7 @@ class CodeReviewServiceTest {
         session.addMessage("user", "Initial context");
         session.addMessage("assistant", "Initial review");
 
-        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
-        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
         when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, null)).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
         when(sessionService.toAiMessages(session)).thenReturn(List.of(
@@ -163,8 +157,8 @@ class CodeReviewServiceTest {
 
         codeReviewService.handleBotCommand(payload, null);
 
-        verify(giteaApiClient).addReaction("testowner", "testrepo", 42L, "eyes", null);
-        verify(giteaApiClient).postComment(eq("testowner"), eq("testrepo"), eq(1L), contains("Here's my explanation"), isNull());
+        verify(repositoryClient).addReaction("testowner", "testrepo", 42L, "eyes");
+        verify(repositoryClient).postComment(eq("testowner"), eq("testrepo"), eq(1L), contains("Here's my explanation"));
     }
 
     @Test
@@ -201,9 +195,7 @@ class CodeReviewServiceTest {
         session.addMessage("user", "Initial context");
         session.addMessage("assistant", "Initial review");
 
-        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
-        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
         when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, null)).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
         when(sessionService.toAiMessages(session)).thenReturn(List.of(
@@ -215,11 +207,11 @@ class CodeReviewServiceTest {
 
         codeReviewService.handleInlineComment(payload, null);
 
-        verify(giteaApiClient).addReaction("testowner", "testrepo", 55L, "eyes", null);
-        verify(giteaApiClient).postInlineReviewComment(
+        verify(repositoryClient).addReaction("testowner", "testrepo", 55L, "eyes");
+        verify(repositoryClient).postInlineReviewComment(
                 eq("testowner"), eq("testrepo"), eq(1L),
                 eq("src/main/java/Foo.java"), eq(15),
-                contains("Here's the explanation"), isNull());
+                contains("Here's the explanation"));
     }
 
     @Test
@@ -231,9 +223,7 @@ class CodeReviewServiceTest {
         session.addMessage("user", "Initial context");
         session.addMessage("assistant", "Initial review");
 
-        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
-        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
         when(sessionService.getOrCreateSession("testowner", "testrepo", 1L, null)).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
         when(sessionService.toAiMessages(session)).thenReturn(List.of(
@@ -245,10 +235,10 @@ class CodeReviewServiceTest {
 
         codeReviewService.handleInlineComment(payload, null);
 
-        verify(giteaApiClient, never()).postInlineReviewComment(anyString(), anyString(), anyLong(),
-                anyString(), anyInt(), anyString(), anyString());
-        verify(giteaApiClient).postComment(eq("testowner"), eq("testrepo"), eq(1L),
-                contains("Explanation without line"), isNull());
+        verify(repositoryClient, never()).postInlineReviewComment(anyString(), anyString(), anyLong(),
+                anyString(), anyInt(), anyString());
+        verify(repositoryClient).postComment(eq("testowner"), eq("testrepo"), eq(1L),
+                contains("Explanation without line"));
     }
 
     @Test
@@ -293,11 +283,7 @@ class CodeReviewServiceTest {
         session.addMessage("user", "Initial context");
         session.addMessage("assistant", "Initial review");
 
-        when(botConfig.getAlias()).thenReturn("@ai_bot");
-        when(botConfig.getUsername()).thenReturn("ai_bot");
-        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
-        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
         when(sessionService.getOrCreateSession("testowner", "testrepo", 2L, null)).thenReturn(session);
         when(sessionService.addMessage(any(), anyString(), anyString())).thenReturn(session);
         when(sessionService.toAiMessages(session)).thenReturn(List.of(
@@ -309,8 +295,8 @@ class CodeReviewServiceTest {
         GiteaReview review = new GiteaReview();
         review.setId(10L);
         review.setState("COMMENT");
-        when(giteaApiClient.getReviews("testowner", "testrepo", 2L, null))
-                .thenReturn(List.of(review));
+        when(repositoryClient.getReviews("testowner", "testrepo", 2L))
+                .thenReturn(List.<Review>of(review));
 
         // Set up review comments - one with bot mention, one without
         GiteaReviewComment botComment = new GiteaReviewComment();
@@ -326,8 +312,8 @@ class CodeReviewServiceTest {
         normalComment.setPath("src/main/java/Bar.java");
         normalComment.setLine(5);
 
-        when(giteaApiClient.getReviewComments("testowner", "testrepo", 2L, 10L, null))
-                .thenReturn(List.of(botComment, normalComment));
+        when(repositoryClient.getReviewComments("testowner", "testrepo", 2L, 10L))
+                .thenReturn(List.<ReviewComment>of(botComment, normalComment));
 
         when(aiClient.chat(anyList(), contains("src/main/java/Foo.java"), eq("test prompt"), isNull()))
                 .thenReturn("Here's the explanation");
@@ -335,22 +321,21 @@ class CodeReviewServiceTest {
         codeReviewService.handleReviewSubmitted(payload, null);
 
         // Should only process the bot-mentioning comment
-        verify(giteaApiClient).addReaction("testowner", "testrepo", 100L, "eyes", null);
-        verify(giteaApiClient).postInlineReviewComment(
+        verify(repositoryClient).addReaction("testowner", "testrepo", 100L, "eyes");
+        verify(repositoryClient).postInlineReviewComment(
                 eq("testowner"), eq("testrepo"), eq(2L),
                 eq("src/main/java/Foo.java"), eq(15),
-                contains("Here's the explanation"), isNull());
+                contains("Here's the explanation"));
 
         // Should NOT react to the normal comment
-        verify(giteaApiClient, never()).addReaction("testowner", "testrepo", 101L, "eyes", null);
+        verify(repositoryClient, never()).addReaction("testowner", "testrepo", 101L, "eyes");
     }
 
     @Test
     void handleReviewSubmitted_noReviews_doesNothing() {
         WebhookPayload payload = createReviewSubmittedPayload();
 
-        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
-        when(giteaApiClient.getReviews("testowner", "testrepo", 2L, null))
+        when(repositoryClient.getReviews("testowner", "testrepo", 2L))
                 .thenReturn(List.of());
 
         codeReviewService.handleReviewSubmitted(payload, null);
@@ -362,22 +347,18 @@ class CodeReviewServiceTest {
     void handleReviewSubmitted_noBotMentions_doesNothing() {
         WebhookPayload payload = createReviewSubmittedPayload();
 
-        when(botConfig.getAlias()).thenReturn("@ai_bot");
-        when(botConfig.getUsername()).thenReturn("ai_bot");
-        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
-        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
 
         GiteaReview review = new GiteaReview();
         review.setId(10L);
-        when(giteaApiClient.getReviews("testowner", "testrepo", 2L, null))
-                .thenReturn(List.of(review));
+        when(repositoryClient.getReviews("testowner", "testrepo", 2L))
+                .thenReturn(List.<Review>of(review));
 
         GiteaReviewComment normalComment = new GiteaReviewComment();
         normalComment.setId(101L);
         normalComment.setBody("just a regular comment");
-        when(giteaApiClient.getReviewComments("testowner", "testrepo", 2L, 10L, null))
-                .thenReturn(List.of(normalComment));
+        when(repositoryClient.getReviewComments("testowner", "testrepo", 2L, 10L))
+                .thenReturn(List.<ReviewComment>of(normalComment));
 
         codeReviewService.handleReviewSubmitted(payload, null);
 
@@ -388,16 +369,12 @@ class CodeReviewServiceTest {
     void handleReviewSubmitted_botOwnComments_filtered() {
         WebhookPayload payload = createReviewSubmittedPayload();
 
-        when(botConfig.getAlias()).thenReturn("@ai_bot");
-        when(botConfig.getUsername()).thenReturn("ai_bot");
-        when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
-        when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
 
         GiteaReview review = new GiteaReview();
         review.setId(10L);
-        when(giteaApiClient.getReviews("testowner", "testrepo", 2L, null))
-                .thenReturn(List.of(review));
+        when(repositoryClient.getReviews("testowner", "testrepo", 2L))
+                .thenReturn(List.<Review>of(review));
 
         // Bot's own comment that mentions itself (e.g. from its formatted response)
         GiteaReviewComment botOwnComment = new GiteaReviewComment();
@@ -409,14 +386,14 @@ class CodeReviewServiceTest {
         botUser.setLogin("ai_bot");
         botOwnComment.setUser(botUser);
 
-        when(giteaApiClient.getReviewComments("testowner", "testrepo", 2L, 10L, null))
-                .thenReturn(List.of(botOwnComment));
+        when(repositoryClient.getReviewComments("testowner", "testrepo", 2L, 10L))
+                .thenReturn(List.<ReviewComment>of(botOwnComment));
 
         codeReviewService.handleReviewSubmitted(payload, null);
 
         // Bot's own comment should be filtered out — no AI call, no reaction
         verify(aiClient, never()).chat(anyList(), anyString(), anyString(), anyString());
-        verify(giteaApiClient, never()).addReaction(anyString(), anyString(), anyLong(), anyString(), anyString());
+        verify(repositoryClient, never()).addReaction(anyString(), anyString(), anyLong(), anyString());
     }
 
     private WebhookPayload createTestPayload() {

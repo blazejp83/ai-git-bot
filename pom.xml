@@ -12,10 +12,10 @@
     </parent>
 
     <groupId>org.remus</groupId>
-    <artifactId>ai-gitea-bot</artifactId>
-    <version>1.2.0-SNAPSHOT</version>
-    <name>AI Gitea Bot</name>
-    <description>An application that adds Bot-capabilities to a Gitea instance and works with Anthropics AI, OpenAI or ollama</description>
+    <artifactId>ai-git-bot</artifactId>
+    <version>1.2.0</version>
+    <name>AI Git Bot</name>
+    <description>AI-Git-Bot is a lightweight, self-hostable gateway application that connects your Git platforms with AI providers.</description>
 
     <properties>
         <java.version>21</java.version>
@@ -34,6 +34,18 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-thymeleaf</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.thymeleaf.extras</groupId>
+            <artifactId>thymeleaf-extras-springsecurity6</artifactId>
         </dependency>
 
         <!-- Spring Data JPA -->
@@ -73,6 +85,11 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

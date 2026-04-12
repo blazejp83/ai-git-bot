@@ -4,42 +4,42 @@ import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.NonNull;
 import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.ai.AiMessage;
-import org.remus.giteabot.config.BotConfigProperties;
 import org.remus.giteabot.config.PromptService;
-import org.remus.giteabot.gitea.GiteaApiClient;
-import org.remus.giteabot.gitea.model.GiteaReview;
-import org.remus.giteabot.gitea.model.GiteaReviewComment;
 import org.remus.giteabot.gitea.model.WebhookPayload;
+import org.remus.giteabot.repository.RepositoryApiClient;
+import org.remus.giteabot.repository.model.Review;
+import org.remus.giteabot.repository.model.ReviewComment;
 import org.remus.giteabot.session.ReviewSession;
 import org.remus.giteabot.session.SessionService;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+/**
+ * Core code-review business logic.  Not a Spring-managed singleton — instances
+ * are created per-bot by {@link org.remus.giteabot.admin.BotWebhookService}
+ * with the bot's own {@link AiClient} and {@link RepositoryApiClient}.
+ */
 @Slf4j
-@Service
 public class CodeReviewService {
 
     static final int MAX_DIFF_CHARS_FOR_CONTEXT = 60000;
 
-    private final GiteaApiClient giteaApiClient;
+    private final RepositoryApiClient repositoryClient;
     private final AiClient aiClient;
     private final PromptService promptService;
     private final SessionService sessionService;
-    private final BotConfigProperties botConfig;
+    private final String botUsername;
 
-    public CodeReviewService(GiteaApiClient giteaApiClient, AiClient aiClient,
+    public CodeReviewService(RepositoryApiClient repositoryClient, AiClient aiClient,
                              PromptService promptService, SessionService sessionService,
-                             BotConfigProperties botConfig) {
-        this.giteaApiClient = giteaApiClient;
+                             String botUsername) {
+        this.repositoryClient = repositoryClient;
         this.aiClient = aiClient;
         this.promptService = promptService;
         this.sessionService = sessionService;
-        this.botConfig = botConfig;
+        this.botUsername = botUsername;
     }
 
-    @Async
     public void reviewPullRequest(WebhookPayload payload, String promptName) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();
@@ -50,22 +50,20 @@ public class CodeReviewService {
         log.info("Starting code review for PR #{} '{}' in {}/{}, prompt={}", prNumber, prTitle, owner, repo, promptName);
 
         try {
-            String giteaToken = promptService.resolveGiteaToken(promptName, null);
-            String diff = giteaApiClient.getPullRequestDiff(owner, repo, prNumber, giteaToken);
+            String diff = repositoryClient.getPullRequestDiff(owner, repo, prNumber);
             if (diff == null || diff.isBlank()) {
                 log.warn("No diff found for PR #{} in {}/{}", prNumber, owner, repo);
                 return;
             }
 
             String systemPrompt = promptService.getSystemPrompt(promptName);
-            String modelOverride = promptService.resolveModel(promptName, null);
 
             ReviewSession session = sessionService.getOrCreateSession(owner, repo, prNumber, promptName);
 
             String review;
             if (session.getMessages().isEmpty()) {
                 // Initial review: use the chunked diff review for thoroughness
-                review = aiClient.reviewDiff(prTitle, prBody, diff, systemPrompt, modelOverride);
+                review = aiClient.reviewDiff(prTitle, prBody, diff, systemPrompt, null);
 
                 // Store a summary user message and the review in the session
                 String userSummary = buildPrSummaryMessage(prTitle, prBody);
@@ -76,14 +74,14 @@ public class CodeReviewService {
                 String updateMessage = buildPrUpdateMessage(prTitle, diff);
                 List<AiMessage> history = sessionService.toAiMessages(session);
 
-                review = aiClient.chat(history, updateMessage, systemPrompt, modelOverride);
+                review = aiClient.chat(history, updateMessage, systemPrompt, null);
 
                 sessionService.addMessage(session, "user", updateMessage);
                 sessionService.addMessage(session, "assistant", review);
             }
 
             String commentBody = formatReviewComment(review);
-            giteaApiClient.postReviewComment(owner, repo, prNumber, commentBody, giteaToken);
+            repositoryClient.postReviewComment(owner, repo, prNumber, commentBody);
 
             // Compact context window to reduce memory/token usage for subsequent calls
             sessionService.compactContextWindow(session);
@@ -94,7 +92,6 @@ public class CodeReviewService {
         }
     }
 
-    @Async
     public void handleBotCommand(WebhookPayload payload, String promptName) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();
@@ -105,24 +102,21 @@ public class CodeReviewService {
         log.info("Handling bot command in comment #{} for PR #{} in {}/{}", commentId, prNumber, owner, repo);
 
         try {
-            String giteaToken = promptService.resolveGiteaToken(promptName, null);
-
             // Add eyes reaction to acknowledge the comment
             try {
-                giteaApiClient.addReaction(owner, repo, commentId, "eyes", giteaToken);
+                repositoryClient.addReaction(owner, repo, commentId, "eyes");
             } catch (Exception e) {
                 log.warn("Failed to add reaction to comment #{}: {}", commentId, e.getMessage());
             }
 
             String systemPrompt = promptService.getSystemPrompt(promptName);
-            String modelOverride = promptService.resolveModel(promptName, null);
 
             // Get or create session
             ReviewSession session = sessionService.getOrCreateSession(owner, repo, prNumber, promptName);
 
             // If session is empty, add context from the PR
             if (session.getMessages().isEmpty()) {
-                String diff = giteaApiClient.getPullRequestDiff(owner, repo, prNumber, giteaToken);
+                String diff = repositoryClient.getPullRequestDiff(owner, repo, prNumber);
                 var prContext = buildPrContextString(payload, diff);
                 sessionService.addMessage(session, "user", prContext);
                 sessionService.addMessage(session, "assistant",
@@ -131,7 +125,7 @@ public class CodeReviewService {
 
             // Send the comment as a new message in the conversation
             List<AiMessage> history = sessionService.toAiMessages(session);
-            String response = aiClient.chat(history, commentBody, systemPrompt, modelOverride);
+            String response = aiClient.chat(history, commentBody, systemPrompt, null);
 
             // Store messages in session
             sessionService.addMessage(session, "user", commentBody);
@@ -139,7 +133,7 @@ public class CodeReviewService {
 
             // Post the response as a comment on the PR
             String formattedResponse = formatBotResponse(response);
-            giteaApiClient.postComment(owner, repo, prNumber, formattedResponse, giteaToken);
+            repositoryClient.postComment(owner, repo, prNumber, formattedResponse);
 
             // Compact context window to reduce memory/token usage
             sessionService.compactContextWindow(session);
@@ -164,7 +158,6 @@ public class CodeReviewService {
         return prContext;
     }
 
-    @Async
     public void handleInlineComment(WebhookPayload payload, String promptName) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();
@@ -179,24 +172,21 @@ public class CodeReviewService {
                 commentId, filePath, prNumber, owner, repo);
 
         try {
-            String giteaToken = promptService.resolveGiteaToken(promptName, null);
-
             // Add eyes reaction to acknowledge the comment
             try {
-                giteaApiClient.addReaction(owner, repo, commentId, "eyes", giteaToken);
+                repositoryClient.addReaction(owner, repo, commentId, "eyes");
             } catch (Exception e) {
                 log.warn("Failed to add reaction to inline comment #{}: {}", commentId, e.getMessage());
             }
 
             String systemPrompt = promptService.getSystemPrompt(promptName);
-            String modelOverride = promptService.resolveModel(promptName, null);
 
             // Get or create session for conversation context
             ReviewSession session = sessionService.getOrCreateSession(owner, repo, prNumber, promptName);
 
             // If session is empty, add PR context
             if (session.getMessages().isEmpty()) {
-                String diff = giteaApiClient.getPullRequestDiff(owner, repo, prNumber, giteaToken);
+                String diff = repositoryClient.getPullRequestDiff(owner, repo, prNumber);
                 String prTitle = payload.getIssue() != null ? payload.getIssue().getTitle() : "";
                 String prBody = payload.getIssue() != null ? payload.getIssue().getBody() : null;
                 String prContext = "This is a pull request in " + owner + "/" + repo + ".";
@@ -216,17 +206,17 @@ public class CodeReviewService {
                         "I've reviewed the pull request context. How can I help you?");
             }
 
-            var formattedResponse = buildInlineCommentAndSend(filePath, diffHunk, commentBody, session, systemPrompt, modelOverride);
+            var formattedResponse = buildInlineCommentAndSend(filePath, diffHunk, commentBody, session, systemPrompt, null);
             if (line != null && line > 0) {
                 try {
-                    giteaApiClient.postInlineReviewComment(owner, repo, prNumber,
-                            filePath, line, formattedResponse, giteaToken);
+                    repositoryClient.postInlineReviewComment(owner, repo, prNumber,
+                            filePath, line, formattedResponse);
                 } catch (Exception e) {
                     log.warn("Failed to post inline reply, falling back to regular comment: {}", e.getMessage());
-                    giteaApiClient.postComment(owner, repo, prNumber, formattedResponse, giteaToken);
+                    repositoryClient.postComment(owner, repo, prNumber, formattedResponse);
                 }
             } else {
-                giteaApiClient.postComment(owner, repo, prNumber, formattedResponse, giteaToken);
+                repositoryClient.postComment(owner, repo, prNumber, formattedResponse);
             }
 
             // Compact context window to reduce memory/token usage
@@ -260,9 +250,8 @@ public class CodeReviewService {
      * Handles a review submitted event (action: "reviewed").
      * Gitea sends this when a user submits a review with inline comments.
      * The individual comments are NOT in the webhook payload, so we fetch them
-     * from the Gitea API, filter for bot mentions, and respond to each.
+     * from the repository API, filter for bot mentions, and respond to each.
      */
-    @Async
     public void handleReviewSubmitted(WebhookPayload payload, String promptName) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();
@@ -271,19 +260,17 @@ public class CodeReviewService {
         log.info("Handling review submitted event for PR #{} in {}/{}", prNumber, owner, repo);
 
         try {
-            String giteaToken = promptService.resolveGiteaToken(promptName, null);
             String systemPrompt = promptService.getSystemPrompt(promptName);
-            String modelOverride = promptService.resolveModel(promptName, null);
 
             // Fetch all reviews for the PR to find the latest one
-            List<GiteaReview> reviews = giteaApiClient.getReviews(owner, repo, prNumber, giteaToken);
+            List<Review> reviews = repositoryClient.getReviews(owner, repo, prNumber);
             if (reviews.isEmpty()) {
                 log.warn("No reviews found for PR #{} in {}/{}", prNumber, owner, repo);
                 return;
             }
 
             // Take the latest review (highest ID)
-            GiteaReview latestReview = reviews.stream()
+            Review latestReview = reviews.stream()
                     .reduce((a, b) -> (b.getId() != null && (a.getId() == null || b.getId() > a.getId())) ? b : a)
                     .orElse(null);
 
@@ -295,13 +282,12 @@ public class CodeReviewService {
             log.info("Processing latest review #{} for PR #{} in {}/{}", latestReview.getId(), prNumber, owner, repo);
 
             // Fetch comments for this review
-            List<GiteaReviewComment> comments = giteaApiClient.getReviewComments(
-                    owner, repo, prNumber, latestReview.getId(), giteaToken);
+            List<ReviewComment> comments = repositoryClient.getReviewComments(
+                    owner, repo, prNumber, latestReview.getId());
 
             // Filter for comments that mention the bot, excluding the bot's own comments
-            String botAlias = botConfig.getAlias();
-            String botUsername = botConfig.getUsername();
-            List<GiteaReviewComment> botMentionComments = comments.stream()
+            String botAlias = (botUsername != null && !botUsername.isBlank()) ? "@" + botUsername : "";
+            List<ReviewComment> botMentionComments = comments.stream()
                     .filter(c -> c.getBody() != null && c.getBody().contains(botAlias))
                     .filter(c -> !isBotComment(c, botUsername))
                     .toList();
@@ -319,7 +305,7 @@ public class CodeReviewService {
 
             // If session is empty, add PR context
             if (session.getMessages().isEmpty()) {
-                String diff = giteaApiClient.getPullRequestDiff(owner, repo, prNumber, giteaToken);
+                String diff = repositoryClient.getPullRequestDiff(owner, repo, prNumber);
                 String prTitle = payload.getPullRequest().getTitle();
                 String prBody = payload.getPullRequest().getBody();
                 String prContext = "This is a pull request in " + owner + "/" + repo + ".";
@@ -340,10 +326,10 @@ public class CodeReviewService {
             }
 
             // Process each bot-mentioning comment
-            for (GiteaReviewComment reviewComment : botMentionComments) {
+            for (ReviewComment reviewComment : botMentionComments) {
                 try {
                     processReviewComment(owner, repo, prNumber, reviewComment,
-                            session, systemPrompt, modelOverride, giteaToken);
+                            session, systemPrompt, null);
                 } catch (Exception e) {
                     log.error("Failed to process review comment #{} on PR #{} in {}/{}: {}",
                             reviewComment.getId(), prNumber, owner, repo, e.getMessage(), e);
@@ -361,8 +347,8 @@ public class CodeReviewService {
     }
 
     private void processReviewComment(String owner, String repo, Long prNumber,
-                                      GiteaReviewComment reviewComment, ReviewSession session,
-                                      String systemPrompt, String modelOverride, String giteaToken) {
+                                      ReviewComment reviewComment, ReviewSession session,
+                                      String systemPrompt, String modelOverride) {
         Long commentId = reviewComment.getId();
         String filePath = reviewComment.getPath();
         String diffHunk = reviewComment.getDiffHunk();
@@ -373,7 +359,7 @@ public class CodeReviewService {
 
         // Add eyes reaction to acknowledge
         try {
-            giteaApiClient.addReaction(owner, repo, commentId, "eyes", giteaToken);
+            repositoryClient.addReaction(owner, repo, commentId, "eyes");
         } catch (Exception e) {
             log.warn("Failed to add reaction to review comment #{}: {}", commentId, e.getMessage());
         }
@@ -382,15 +368,15 @@ public class CodeReviewService {
         var formattedResponse = buildInlineCommentAndSend(filePath, diffHunk, commentBody, session, systemPrompt, modelOverride);
         if (line != null && line > 0) {
             try {
-                giteaApiClient.postInlineReviewComment(owner, repo, prNumber,
-                        filePath, line, formattedResponse, giteaToken);
+                repositoryClient.postInlineReviewComment(owner, repo, prNumber,
+                        filePath, line, formattedResponse);
             } catch (Exception e) {
                 log.warn("Failed to post inline reply for review comment #{}, falling back to regular comment: {}",
                         commentId, e.getMessage());
-                giteaApiClient.postComment(owner, repo, prNumber, formattedResponse, giteaToken);
+                repositoryClient.postComment(owner, repo, prNumber, formattedResponse);
             }
         } else {
-            giteaApiClient.postComment(owner, repo, prNumber, formattedResponse, giteaToken);
+            repositoryClient.postComment(owner, repo, prNumber, formattedResponse);
         }
     }
 
@@ -455,12 +441,11 @@ public class CodeReviewService {
      * Checks whether a review comment was written by the bot itself.
      * Prevents the bot from responding to its own comments in review-submitted events.
      */
-    private boolean isBotComment(GiteaReviewComment comment, String botUsername) {
+    private boolean isBotComment(ReviewComment comment, String botUsername) {
         if (botUsername == null || botUsername.isBlank()) {
             return false;
         }
-        return comment.getUser() != null
-                && comment.getUser().getLogin() != null
-                && botUsername.equalsIgnoreCase(comment.getUser().getLogin());
+        return comment.getUserLogin() != null
+                && botUsername.equalsIgnoreCase(comment.getUserLogin());
     }
 }

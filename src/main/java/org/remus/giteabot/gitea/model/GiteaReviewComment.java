@@ -3,14 +3,16 @@ package org.remus.giteabot.gitea.model;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
+import org.remus.giteabot.repository.model.ReviewComment;
 
 /**
+ * Gitea-specific implementation of {@link ReviewComment}.
  * API response model for a Gitea pull request review comment.
  * Returned by GET /repos/{owner}/{repo}/pulls/{index}/reviews/{id}/comments
  */
 @Data
 @JsonIgnoreProperties(ignoreUnknown = true)
-public class GiteaReviewComment {
+public class GiteaReviewComment implements ReviewComment {
 
     private Long id;
 
@@ -30,5 +32,10 @@ public class GiteaReviewComment {
     private Integer newLineNum;
 
     private GiteaReview.GiteaUser user;
+
+    @Override
+    public String getUserLogin() {
+        return user != null ? user.getLogin() : null;
+    }
 }
 

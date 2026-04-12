@@ -3,47 +3,57 @@ package org.remus.giteabot.gitea;
 import lombok.extern.slf4j.Slf4j;
 import org.remus.giteabot.gitea.model.GiteaReview;
 import org.remus.giteabot.gitea.model.GiteaReviewComment;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
+import org.remus.giteabot.repository.RepositoryApiClient;
+import org.remus.giteabot.repository.model.RepositoryCredentials;
+import org.remus.giteabot.repository.model.Review;
+import org.remus.giteabot.repository.model.ReviewComment;
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
+/**
+ * Gitea-specific implementation of {@link RepositoryApiClient}.
+ * Provides all repository operations against a Gitea server using the Gitea REST API v1.
+ */
 @Slf4j
-@Service
-public class GiteaApiClient {
+public class GiteaApiClient implements RepositoryApiClient {
 
     private final RestClient giteaRestClient;
-    private final String giteaUrl;
-    private final String defaultGiteaToken;
-    private final ConcurrentMap<String, RestClient> clientCache = new ConcurrentHashMap<>();
+    private final RepositoryCredentials credentials;
 
-    public GiteaApiClient(@Qualifier("giteaRestClient") RestClient giteaRestClient,
-                           @Value("${gitea.url}") String giteaUrl,
-                           @Value("${gitea.token}") String defaultGiteaToken) {
-        this.giteaRestClient = giteaRestClient;
-        this.giteaUrl = giteaUrl;
-        this.defaultGiteaToken = defaultGiteaToken;
+    /**
+     * Creates a GiteaApiClient with the given RestClient and credentials.
+     *
+     * @param restClient  pre-configured RestClient pointing at the Gitea API base URL
+     * @param credentials the repository credentials (base URL, clone URL, token)
+     */
+    public GiteaApiClient(RestClient restClient, RepositoryCredentials credentials) {
+        this.giteaRestClient = restClient;
+        this.credentials = credentials;
     }
 
-    public String getPullRequestDiff(String owner, String repo, Long pullNumber, String tokenOverride) {
+    @Override
+    public RepositoryCredentials getCredentials() {
+        return credentials;
+    }
+
+    @Override
+    public String getPullRequestDiff(String owner, String repo, Long pullNumber) {
         log.info("Fetching diff for PR #{} in {}/{}", pullNumber, owner, repo);
-        return getClient(tokenOverride).get()
+        return giteaRestClient.get()
                 .uri("/api/v1/repos/{owner}/{repo}/pulls/{index}.diff", owner, repo, pullNumber)
                 .header("Accept", "text/plain")
                 .retrieve()
                 .body(String.class);
     }
 
-    public void postReviewComment(String owner, String repo, Long pullNumber, String body, String tokenOverride) {
+    @Override
+    public void postReviewComment(String owner, String repo, Long pullNumber, String body) {
         log.info("Posting review comment on PR #{} in {}/{}", pullNumber, owner, repo);
-        getClient(tokenOverride).post()
+        giteaRestClient.post()
                 .uri("/api/v1/repos/{owner}/{repo}/pulls/{index}/reviews", owner, repo, pullNumber)
                 .body(new ReviewRequest(body, "COMMENT"))
                 .retrieve()
@@ -51,9 +61,10 @@ public class GiteaApiClient {
         log.info("Review comment posted successfully");
     }
 
-    public void postComment(String owner, String repo, Long issueNumber, String body, String tokenOverride) {
+    @Override
+    public void postComment(String owner, String repo, Long issueNumber, String body) {
         log.info("Posting comment on issue/PR #{} in {}/{}", issueNumber, owner, repo);
-        getClient(tokenOverride).post()
+        giteaRestClient.post()
                 .uri("/api/v1/repos/{owner}/{repo}/issues/{index}/comments", owner, repo, issueNumber)
                 .body(new CommentRequest(body))
                 .retrieve()
@@ -61,21 +72,23 @@ public class GiteaApiClient {
         log.info("Comment posted successfully");
     }
 
-    public void addReaction(String owner, String repo, Long commentId, String reaction, String tokenOverride) {
+    @Override
+    public void addReaction(String owner, String repo, Long commentId, String reaction) {
         log.info("Adding '{}' reaction to comment #{} in {}/{}", reaction, commentId, owner, repo);
-        getClient(tokenOverride).post()
+        giteaRestClient.post()
                 .uri("/api/v1/repos/{owner}/{repo}/issues/comments/{id}/reactions", owner, repo, commentId)
                 .body(new ReactionRequest(reaction))
                 .retrieve()
                 .toBodilessEntity();
     }
 
+    @Override
     public void postInlineReviewComment(String owner, String repo, Long pullNumber,
-                                        String filePath, int line, String body, String tokenOverride) {
+                                        String filePath, int line, String body) {
         log.info("Posting inline review comment on PR #{} in {}/{} at {}:{}", pullNumber, owner, repo, filePath, line);
         var request = new InlineReviewRequest("", "COMMENT",
                 List.of(new InlineReviewComment(body, line, filePath)));
-        getClient(tokenOverride).post()
+        giteaRestClient.post()
                 .uri("/api/v1/repos/{owner}/{repo}/pulls/{index}/reviews", owner, repo, pullNumber)
                 .body(request)
                 .retrieve()
@@ -83,32 +96,34 @@ public class GiteaApiClient {
         log.info("Inline review comment posted successfully");
     }
 
-    public List<GiteaReview> getReviews(String owner, String repo, Long pullNumber, String tokenOverride) {
+    @Override
+    public List<Review> getReviews(String owner, String repo, Long pullNumber) {
         log.info("Fetching reviews for PR #{} in {}/{}", pullNumber, owner, repo);
-        List<GiteaReview> reviews = getClient(tokenOverride).get()
+        List<GiteaReview> reviews = giteaRestClient.get()
                 .uri("/api/v1/repos/{owner}/{repo}/pulls/{index}/reviews", owner, repo, pullNumber)
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {});
-        return reviews != null ? reviews : List.of();
+        return reviews != null ? List.copyOf(reviews) : List.of();
     }
 
-    public List<GiteaReviewComment> getReviewComments(String owner, String repo, Long pullNumber,
-                                                      Long reviewId, String tokenOverride) {
+    @Override
+    public List<ReviewComment> getReviewComments(String owner, String repo, Long pullNumber,
+                                                       Long reviewId) {
         log.info("Fetching comments for review #{} on PR #{} in {}/{}", reviewId, pullNumber, owner, repo);
-        List<GiteaReviewComment> comments = getClient(tokenOverride).get()
+        List<GiteaReviewComment> comments = giteaRestClient.get()
                 .uri("/api/v1/repos/{owner}/{repo}/pulls/{index}/reviews/{id}/comments",
                         owner, repo, pullNumber, reviewId)
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {});
-        return comments != null ? comments : List.of();
+        return comments != null ? List.copyOf(comments) : List.of();
     }
 
     // ---- Repository operations for the issue implementation agent ----
 
-    @SuppressWarnings("unchecked")
-    public String getDefaultBranch(String owner, String repo, String tokenOverride) {
+    @Override
+    public String getDefaultBranch(String owner, String repo) {
         log.info("Fetching default branch for {}/{}", owner, repo);
-        Map<String, Object> repoInfo = getClient(tokenOverride).get()
+        Map<String, Object> repoInfo = giteaRestClient.get()
                 .uri("/api/v1/repos/{owner}/{repo}", owner, repo)
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {});
@@ -118,10 +133,11 @@ public class GiteaApiClient {
         return "main";
     }
 
+    @Override
     @SuppressWarnings("unchecked")
-    public List<Map<String, Object>> getRepositoryTree(String owner, String repo, String ref, String tokenOverride) {
+    public List<Map<String, Object>> getRepositoryTree(String owner, String repo, String ref) {
         log.info("Fetching repository tree for {}/{} at ref={}", owner, repo, ref);
-        Map<String, Object> result = getClient(tokenOverride).get()
+        Map<String, Object> result = giteaRestClient.get()
                 .uri("/api/v1/repos/{owner}/{repo}/git/trees/{ref}?recursive=true", owner, repo, ref)
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {});
@@ -131,10 +147,10 @@ public class GiteaApiClient {
         return List.of();
     }
 
-    @SuppressWarnings("unchecked")
-    public String getFileContent(String owner, String repo, String path, String ref, String tokenOverride) {
+    @Override
+    public String getFileContent(String owner, String repo, String path, String ref) {
         log.info("Fetching file content for {}/{}/{} at ref={}", owner, repo, path, ref);
-        Map<String, Object> result = getClient(tokenOverride).get()
+        Map<String, Object> result = giteaRestClient.get()
                 .uri("/api/v1/repos/{owner}/{repo}/contents/{path}?ref={ref}", owner, repo, path, ref)
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {});
@@ -145,10 +161,10 @@ public class GiteaApiClient {
         return "";
     }
 
-    @SuppressWarnings("unchecked")
-    public String getFileSha(String owner, String repo, String path, String ref, String tokenOverride) {
+    @Override
+    public String getFileSha(String owner, String repo, String path, String ref) {
         log.info("Fetching file SHA for {}/{}/{} at ref={}", owner, repo, path, ref);
-        Map<String, Object> result = getClient(tokenOverride).get()
+        Map<String, Object> result = giteaRestClient.get()
                 .uri("/api/v1/repos/{owner}/{repo}/contents/{path}?ref={ref}", owner, repo, path, ref)
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {});
@@ -158,9 +174,10 @@ public class GiteaApiClient {
         return null;
     }
 
-    public void createBranch(String owner, String repo, String branchName, String fromRef, String tokenOverride) {
+    @Override
+    public void createBranch(String owner, String repo, String branchName, String fromRef) {
         log.info("Creating branch '{}' from '{}' in {}/{}", branchName, fromRef, owner, repo);
-        getClient(tokenOverride).post()
+        giteaRestClient.post()
                 .uri("/api/v1/repos/{owner}/{repo}/branches", owner, repo)
                 .body(new CreateBranchRequest(branchName, fromRef))
                 .retrieve()
@@ -168,19 +185,20 @@ public class GiteaApiClient {
         log.info("Branch '{}' created successfully", branchName);
     }
 
+    @Override
     public void createOrUpdateFile(String owner, String repo, String path, String content,
-                                   String message, String branch, String sha, String tokenOverride) {
+                                   String message, String branch, String sha) {
         log.info("Creating/updating file {} on branch '{}' in {}/{}", path, branch, owner, repo);
         String base64Content = Base64.getEncoder().encodeToString(content.getBytes());
 
         if (sha != null) {
-            getClient(tokenOverride).put()
+            giteaRestClient.put()
                     .uri("/api/v1/repos/{owner}/{repo}/contents/{path}", owner, repo, path)
                     .body(new UpdateFileRequest(base64Content, message, branch, sha))
                     .retrieve()
                     .toBodilessEntity();
         } else {
-            getClient(tokenOverride).post()
+            giteaRestClient.post()
                     .uri("/api/v1/repos/{owner}/{repo}/contents/{path}", owner, repo, path)
                     .body(new CreateFileRequest(base64Content, message, branch))
                     .retrieve()
@@ -189,10 +207,11 @@ public class GiteaApiClient {
         log.info("File {} committed successfully", path);
     }
 
+    @Override
     public void deleteFile(String owner, String repo, String path, String message,
-                           String branch, String sha, String tokenOverride) {
+                           String branch, String sha) {
         log.info("Deleting file {} on branch '{}' in {}/{}", path, branch, owner, repo);
-        getClient(tokenOverride).method(org.springframework.http.HttpMethod.DELETE)
+        giteaRestClient.method(org.springframework.http.HttpMethod.DELETE)
                 .uri("/api/v1/repos/{owner}/{repo}/contents/{path}", owner, repo, path)
                 .body(new DeleteFileRequest(message, branch, sha))
                 .retrieve()
@@ -200,11 +219,11 @@ public class GiteaApiClient {
         log.info("File {} deleted successfully", path);
     }
 
-    @SuppressWarnings("unchecked")
+    @Override
     public Long createPullRequest(String owner, String repo, String title, String body,
-                                  String head, String base, String tokenOverride) {
+                                  String head, String base) {
         log.info("Creating pull request '{}' in {}/{} from {} to {}", title, owner, repo, head, base);
-        Map<String, Object> result = getClient(tokenOverride).post()
+        Map<String, Object> result = giteaRestClient.post()
                 .uri("/api/v1/repos/{owner}/{repo}/pulls", owner, repo)
                 .body(new CreatePullRequest(title, body, head, base))
                 .retrieve()
@@ -217,10 +236,11 @@ public class GiteaApiClient {
         return prNumber;
     }
 
-    public void deleteBranch(String owner, String repo, String branchName, String tokenOverride) {
+    @Override
+    public void deleteBranch(String owner, String repo, String branchName) {
         log.info("Deleting branch '{}' in {}/{}", branchName, owner, repo);
         try {
-            getClient(tokenOverride).delete()
+            giteaRestClient.delete()
                     .uri("/api/v1/repos/{owner}/{repo}/branches/{branch}", owner, repo, branchName)
                     .retrieve()
                     .toBodilessEntity();
@@ -228,18 +248,6 @@ public class GiteaApiClient {
         } catch (Exception e) {
             log.warn("Failed to delete branch '{}': {}", branchName, e.getMessage());
         }
-    }
-
-    private RestClient getClient(String tokenOverride) {
-        if (tokenOverride != null && !tokenOverride.isBlank()) {
-            return clientCache.computeIfAbsent(tokenOverride, token ->
-                    RestClient.builder()
-                            .baseUrl(giteaUrl)
-                            .defaultHeader("Authorization", "token " + token)
-                            .defaultHeader("Accept", "application/json")
-                            .build());
-        }
-        return giteaRestClient;
     }
 
     record ReviewRequest(String body, String event) {}

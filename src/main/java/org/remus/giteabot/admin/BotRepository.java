@@ -1,0 +1,20 @@
+package org.remus.giteabot.admin;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.Optional;
+
+@Repository
+public interface BotRepository extends JpaRepository<Bot, Long> {
+    @Query("SELECT b FROM Bot b LEFT JOIN FETCH b.aiIntegration LEFT JOIN FETCH b.gitIntegration WHERE b.webhookSecret = :secret")
+    Optional<Bot> findByWebhookSecret(@Param("secret") String webhookSecret);
+
+    @Query("SELECT b FROM Bot b LEFT JOIN FETCH b.aiIntegration LEFT JOIN FETCH b.gitIntegration")
+    List<Bot> findAllWithIntegrations();
+
+    boolean existsByName(String name);
+}
