@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/tmseidel/ai-git-bot/internal/ai"
 	"github.com/tmseidel/ai-git-bot/internal/repo"
@@ -66,20 +70,29 @@ type ToolRequest struct {
 
 // Service handles issue implementation (the agent feature).
 type Service struct {
-	repoClient repo.Client
-	aiClient   ai.Client
-	sessions   *SessionService
-	cfg        AgentConfig
-	promptText string
+	repoClient   repo.Client
+	aiClient     ai.Client
+	sessions     *SessionService
+	toolExecutor *ToolExecutor
+	cfg          AgentConfig
+	promptText   string
 }
 
 func NewService(repoClient repo.Client, aiClient ai.Client, sessions *SessionService, cfg AgentConfig, promptText string) *Service {
+	toolCfg := DefaultToolConfig()
+	if cfg.ValidationEnabled {
+		toolCfg.BuildEnabled = true
+	}
+	if cfg.MaxRetries > 0 {
+		toolCfg.TimeoutSeconds = 300
+	}
 	return &Service{
-		repoClient: repoClient,
-		aiClient:   aiClient,
-		sessions:   sessions,
-		cfg:        cfg,
-		promptText: promptText,
+		repoClient:   repoClient,
+		aiClient:     aiClient,
+		sessions:     sessions,
+		toolExecutor: NewToolExecutor(toolCfg),
+		cfg:          cfg,
+		promptText:   promptText,
 	}
 }
 
@@ -261,6 +274,13 @@ func (s *Service) generateValidated(ctx context.Context, session *AgentSessionRo
 	if maxRetries == 0 {
 		maxRetries = 1
 	}
+	maxToolExecs := 3
+
+	// Add available tools info
+	if s.cfg.ValidationEnabled {
+		tools := s.toolExecutor.GetAvailableTools()
+		userMsg += "\n\n**Available validation tools**: " + strings.Join(tools, ", ")
+	}
 
 	s.sessions.AddMessage(session, "user", userMsg)
 
@@ -268,6 +288,12 @@ func (s *Service) generateValidated(ctx context.Context, session *AgentSessionRo
 	currentMsg := userMsg
 	var lastValid *ImplementationPlan
 	fileReqRounds := 0
+	toolExecs := 0
+	var workspaceDir string
+
+	defer func() {
+		s.toolExecutor.CleanupWorkspace(workspaceDir)
+	}()
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		slog.Info("Generating implementation", "issue", issueNumber, "attempt", attempt)
@@ -281,10 +307,11 @@ func (s *Service) generateValidated(ctx context.Context, session *AgentSessionRo
 		}
 
 		s.sessions.AddMessage(session, "assistant", resp)
+		s.postThinkingComment(ctx, owner, repoName, issueNumber, resp)
 
 		plan := parseAIResponse(resp)
 		if plan == nil {
-			break
+			return lastValid
 		}
 
 		// Handle file requests
@@ -292,7 +319,8 @@ func (s *Service) generateValidated(ctx context.Context, session *AgentSessionRo
 			fileReqRounds++
 			tree, _ := s.repoClient.GetRepoTree(ctx, owner, repoName, baseBranch)
 			fileCtx := s.fetchFiles(ctx, owner, repoName, baseBranch, filterValidPaths(plan.RequestFiles, tree))
-			filesMsg := "Here are the requested files:\n" + fileCtx + "\n\nNow implement the issue."
+			filesMsg := "Here are the requested files:\n" + fileCtx +
+				"\n\nNow implement the issue. Output JSON with fileChanges and runTool for validation."
 
 			history = append(history, ai.Message{Role: "user", Content: currentMsg})
 			history = append(history, ai.Message{Role: "assistant", Content: resp})
@@ -306,8 +334,64 @@ func (s *Service) generateValidated(ctx context.Context, session *AgentSessionRo
 			lastValid = plan
 		}
 
-		if !plan.hasFileChanges() {
-			break
+		if !plan.hasFileChanges() && !plan.hasToolRequest() {
+			return lastValid
+		}
+
+		// Skip validation if disabled
+		if !s.cfg.ValidationEnabled {
+			return plan
+		}
+
+		// Tool execution loop
+		if plan.hasToolRequest() && plan.hasFileChanges() && toolExecs < maxToolExecs {
+			toolExecs++
+
+			// Prepare or update workspace
+			if workspaceDir == "" {
+				workspaceDir = s.prepareLocalWorkspace(ctx, owner, repoName, baseBranch, plan.FileChanges)
+				if workspaceDir == "" {
+					slog.Error("Failed to prepare workspace")
+					return plan
+				}
+			} else {
+				s.toolExecutor.UpdateWorkspaceFiles(workspaceDir, plan.FileChanges)
+			}
+
+			toolReq := plan.RunTool
+			slog.Info("AI requested validation tool", "tool", toolReq.Tool, "args", toolReq.Args)
+
+			result := s.toolExecutor.ExecuteTool(ctx, workspaceDir, toolReq.Tool, toolReq.Args)
+
+			// Post tool result
+			s.postToolComment(ctx, owner, repoName, issueNumber, toolReq, result)
+
+			if result.Success {
+				slog.Info("Validation succeeded", "attempt", attempt)
+				return plan
+			}
+
+			// Build feedback for AI
+			feedback := buildToolFeedback(toolReq, result)
+			if lastValid != nil {
+				feedback += buildPreviousChangesInfo(lastValid)
+			}
+
+			history = append(history, ai.Message{Role: "user", Content: currentMsg})
+			history = append(history, ai.Message{Role: "assistant", Content: resp})
+			currentMsg = feedback
+			s.sessions.AddMessage(session, "user", feedback)
+			continue
+		}
+
+		// Has file changes but no tool request — ask AI to add one
+		if plan.hasFileChanges() && !plan.hasToolRequest() {
+			feedback := buildMissingToolFeedback()
+			history = append(history, ai.Message{Role: "user", Content: currentMsg})
+			history = append(history, ai.Message{Role: "assistant", Content: resp})
+			currentMsg = feedback
+			s.sessions.AddMessage(session, "user", feedback)
+			continue
 		}
 
 		return plan
@@ -317,6 +401,141 @@ func (s *Service) generateValidated(ctx context.Context, session *AgentSessionRo
 		return lastValid
 	}
 	return &ImplementationPlan{}
+}
+
+func (s *Service) prepareLocalWorkspace(ctx context.Context, owner, repoName, branch string, fileChanges []FileChange) string {
+	tmpDir, err := os.MkdirTemp("", "agent-validation-")
+	if err != nil {
+		return ""
+	}
+
+	// Try to clone the repo
+	cloneCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	// Get credentials from the repo client for cloning
+	// We use a generic approach: just create the workspace with files
+	cmd := exec.CommandContext(cloneCtx, "git", "init", tmpDir)
+	if err := cmd.Run(); err != nil {
+		// Fallback: just create directory structure
+		slog.Debug("Git init failed, using plain directory", "err", err)
+	}
+
+	// Apply file changes
+	for _, fc := range fileChanges {
+		filePath := filepath.Join(tmpDir, fc.Path)
+		switch strings.ToUpper(fc.Operation) {
+		case "CREATE", "UPDATE":
+			os.MkdirAll(filepath.Dir(filePath), 0755)
+			os.WriteFile(filePath, []byte(fc.Content), 0644)
+		case "DELETE":
+			os.Remove(filePath)
+		}
+	}
+
+	return tmpDir
+}
+
+func (s *Service) postThinkingComment(ctx context.Context, owner, repoName string, issueNumber int64, response string) {
+	// Extract non-JSON reasoning text
+	thinking := response
+	if idx := strings.Index(thinking, "```json"); idx >= 0 {
+		thinking = strings.TrimSpace(thinking[:idx])
+	}
+	if thinking != "" && len(thinking) > 20 {
+		// Truncate long thinking
+		if len(thinking) > 2000 {
+			thinking = thinking[:2000] + "\n... (truncated)"
+		}
+		s.repoClient.PostComment(ctx, owner, repoName, issueNumber,
+			"**AI Agent** (thinking):\n\n"+thinking)
+	}
+}
+
+func (s *Service) postToolComment(ctx context.Context, owner, repoName string, issueNumber int64, toolReq *ToolRequest, result ToolResult) {
+	var comment strings.Builder
+	fmt.Fprintf(&comment, "**Tool Execution**: `%s", toolReq.Tool)
+	if len(toolReq.Args) > 0 {
+		comment.WriteString(" " + strings.Join(toolReq.Args, " "))
+	}
+	comment.WriteString("`\n\n")
+
+	if result.Success {
+		comment.WriteString("**Success**\n")
+	} else {
+		fmt.Fprintf(&comment, "**Failed** (exit code %d)\n", result.ExitCode)
+		if result.Output != "" {
+			output := result.Output
+			if len(output) > 2000 {
+				output = output[:2000] + "\n... (truncated)"
+			}
+			fmt.Fprintf(&comment, "\n```\n%s```\n", output)
+		}
+	}
+
+	s.repoClient.PostComment(ctx, owner, repoName, issueNumber, comment.String())
+}
+
+func buildToolFeedback(toolReq *ToolRequest, result ToolResult) string {
+	var sb strings.Builder
+	sb.WriteString("## Tool Execution Result\n\n")
+	fmt.Fprintf(&sb, "**Command**: `%s", toolReq.Tool)
+	if len(toolReq.Args) > 0 {
+		sb.WriteString(" " + strings.Join(toolReq.Args, " "))
+	}
+	sb.WriteString("`\n\n")
+
+	if result.Success {
+		sb.WriteString("**Success** (exit code 0)\n")
+	} else {
+		fmt.Fprintf(&sb, "**Failed** (exit code %d)\n", result.ExitCode)
+	}
+
+	sb.WriteString("\n" + result.FormatForAI())
+
+	if !result.Success {
+		sb.WriteString("\nFix the errors and provide updated `fileChanges`. Include `runTool` to validate again.")
+	}
+
+	return sb.String()
+}
+
+func buildPreviousChangesInfo(plan *ImplementationPlan) string {
+	if !plan.hasFileChanges() {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## IMPORTANT: Preserve Previous Changes\n\n")
+	sb.WriteString("Your previous response included the following file changes that need to be preserved.\n")
+	sb.WriteString("When fixing errors, you MUST include ALL these changes, not just the fix.\n\n")
+	fmt.Fprintf(&sb, "**Files from your previous response** (%d):\n", len(plan.FileChanges))
+
+	for _, fc := range plan.FileChanges {
+		fmt.Fprintf(&sb, "- `%s` (%s)\n", fc.Path, fc.Operation)
+	}
+
+	sb.WriteString("\nInclude all these files in your `fileChanges` array, updating any that need fixes.\n")
+	return sb.String()
+}
+
+func buildMissingToolFeedback() string {
+	return `## Missing Validation Tool
+
+Your response included fileChanges but no runTool for validation.
+
+**Validation is mandatory.** Please provide the same file changes again,
+but this time include a runTool to validate the code.
+
+Detect the build system from the file tree and request the appropriate tool:
+- Maven: {"tool": "mvn", "args": ["compile", "-q", "-B"]}
+- Gradle: {"tool": "gradle", "args": ["compileJava", "-q"]}
+- npm: {"tool": "npm", "args": ["run", "build"]}
+- Go: {"tool": "go", "args": ["build", "./..."]}
+- Cargo: {"tool": "cargo", "args": ["build"]}
+- Make: {"tool": "make", "args": []}
+
+Output JSON with both fileChanges and runTool.`
 }
 
 func (s *Service) applyFileChange(ctx context.Context, owner, repoName, branch, baseBranch string, fc FileChange, commitMsg string) error {

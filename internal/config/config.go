@@ -28,6 +28,7 @@ type Config struct {
 	AgentValidationMaxRetries    int
 	AgentValidationBuildEnabled  bool
 	AgentValidationBuildTimeout  int
+	AgentValidationToolTimeout   int
 
 	// Session
 	SessionSecret string
@@ -54,6 +55,7 @@ func Load() *Config {
 		AgentValidationMaxRetries:   envInt("AGENT_VALIDATION_MAX_RETRIES", 3),
 		AgentValidationBuildEnabled: envBool("AGENT_VALIDATION_BUILD_ENABLED", false),
 		AgentValidationBuildTimeout: envInt("AGENT_VALIDATION_BUILD_TIMEOUT", 300),
+		AgentValidationToolTimeout: envInt("AGENT_VALIDATION_TOOL_TIMEOUT", 300),
 
 		SessionSecret: envOr("SESSION_SECRET", "change-me-in-production-please"),
 	}
