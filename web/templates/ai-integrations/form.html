@@ -1,0 +1,129 @@
+{{define "title"}}{{if .IsEdit}}Edit{{else}}New{{end}} AI Integration - AI Git Bot{{end}}
+
+{{define "content"}}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>
+        <i class="bi bi-stars"></i>
+        {{if .IsEdit}}Edit AI Integration{{else}}New AI Integration{{end}}
+    </h2>
+</div>
+
+{{if .OAuthError}}
+<div class="alert alert-danger alert-dismissible fade show" role="alert">
+    <i class="bi bi-exclamation-triangle"></i> {{.OAuthError}}
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{{end}}
+
+{{if and .IsEdit (eq .Integration.AuthMethod "oauth")}}
+<!-- OAuth Status Card -->
+<div class="card mb-3 border-success">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+            <div>
+                <h6 class="mb-1"><i class="bi bi-shield-check text-success"></i> Authenticated via OpenAI OAuth</h6>
+                {{if .Integration.OAuthEmail}}
+                <span class="text-muted">Logged in as: <strong>{{.Integration.OAuthEmail}}</strong></span>
+                {{end}}
+            </div>
+            <form action="/ai-integrations/{{.Integration.ID}}/oauth/revoke" method="post" class="d-inline">
+                <button type="submit" class="btn btn-sm btn-outline-danger"
+                        onclick="return confirm('Revoke OAuth tokens and switch back to API key?');">
+                    <i class="bi bi-x-circle"></i> Revoke OAuth
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+{{end}}
+
+<div class="card">
+    <div class="card-body">
+        <form action="/ai-integrations/save" method="post">
+            {{if .IsEdit}}<input type="hidden" name="id" value="{{.Integration.ID}}"/>{{end}}
+
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label for="name" class="form-label">Name</label>
+                    <input type="text" class="form-control" id="name" name="name"
+                           value="{{.Integration.Name}}" placeholder="e.g. My OpenAI Integration" required/>
+                </div>
+                <div class="col-md-6">
+                    <label for="providerType" class="form-label">Provider Type</label>
+                    <select class="form-select" id="providerType" name="providerType" required>
+                        <option value="">Select a provider...</option>
+                        {{range .ProviderTypes}}
+                        <option value="{{.}}"{{if eq . $.Integration.ProviderType}} selected{{end}}>{{.}}</option>
+                        {{end}}
+                    </select>
+                </div>
+
+                <div class="col-md-6">
+                    <label for="apiUrl" class="form-label">API URL</label>
+                    <input type="url" class="form-control" id="apiUrl" name="apiUrl"
+                           value="{{.Integration.ApiURL}}" placeholder="e.g. https://api.openai.com" required/>
+                    <div class="form-text" id="apiUrlHint"></div>
+                </div>
+                <div class="col-md-6">
+                    <label for="apiKey" class="form-label">API Key</label>
+                    <div class="input-group">
+                        <input type="password" class="form-control" id="apiKey" name="apiKey"
+                               placeholder="{{if .IsEdit}}Leave blank to keep current{{else}}Enter API key{{end}}"/>
+                        {{if and .IsEdit (eq .Integration.ProviderType "openai") (ne .Integration.AuthMethod "oauth")}}
+                        <a href="/ai-integrations/{{.Integration.ID}}/oauth" class="btn btn-outline-success"
+                           title="Login with your OpenAI account instead of using an API key">
+                            <i class="bi bi-shield-check"></i> Login with OpenAI
+                        </a>
+                        {{end}}
+                    </div>
+                    {{if .IsEdit}}
+                    <div class="form-text">Leave blank to keep current API key.</div>
+                    {{end}}
+                </div>
+
+                <div class="col-md-6">
+                    <label for="apiVersion" class="form-label">API Version</label>
+                    <input type="text" class="form-control" id="apiVersion" name="apiVersion"
+                           value="{{.Integration.ApiVersion}}" placeholder="e.g. 2024-02-15-preview (optional)"/>
+                </div>
+                <div class="col-md-6">
+                    <label for="model" class="form-label">Model</label>
+                    <input type="text" class="form-control" id="model" name="model"
+                           value="{{.Integration.Model}}" placeholder="e.g. gpt-4o, claude-sonnet-4-6" required/>
+                    <div class="form-text" id="modelHint"></div>
+                </div>
+
+                <div class="col-md-3">
+                    <label for="maxTokens" class="form-label">Max Tokens</label>
+                    <input type="number" class="form-control" id="maxTokens" name="maxTokens"
+                           value="{{.Integration.MaxTokens}}" min="1" required/>
+                </div>
+                <div class="col-md-3">
+                    <label for="maxDiffCharsPerChunk" class="form-label">Max Diff Chars/Chunk</label>
+                    <input type="number" class="form-control" id="maxDiffCharsPerChunk" name="maxDiffCharsPerChunk"
+                           value="{{.Integration.MaxDiffCharsPerChunk}}" min="1" required/>
+                </div>
+                <div class="col-md-3">
+                    <label for="maxDiffChunks" class="form-label">Max Diff Chunks</label>
+                    <input type="number" class="form-control" id="maxDiffChunks" name="maxDiffChunks"
+                           value="{{.Integration.MaxDiffChunks}}" min="1" required/>
+                </div>
+                <div class="col-md-3">
+                    <label for="retryTruncatedChunkChars" class="form-label">Retry Truncated Chars</label>
+                    <input type="number" class="form-control" id="retryTruncatedChunkChars" name="retryTruncatedChunkChars"
+                           value="{{.Integration.RetryTruncatedChunkCh}}" min="1" required/>
+                </div>
+            </div>
+
+            <div class="mt-4">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-check-lg"></i> Save
+                </button>
+                <a href="/ai-integrations" class="btn btn-secondary ms-2">
+                    <i class="bi bi-x-lg"></i> Cancel
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+{{end}}

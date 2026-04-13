@@ -25,24 +25,26 @@ var funcMap = template.FuncMap{
 func LoadTemplates(dir string) *Templates {
 	layoutFile := filepath.Join(dir, "layout.html")
 
-	pages := map[string]string{
-		"login":     filepath.Join(dir, "login.html"),
-		"setup":     filepath.Join(dir, "setup.html"),
-		"dashboard": filepath.Join(dir, "dashboard.html"),
+	standalone := map[string]string{
+		"login": filepath.Join(dir, "login.html"),
+		"setup": filepath.Join(dir, "setup.html"),
+	}
+	withLayout := map[string]string{
+		"dashboard":              filepath.Join(dir, "dashboard.html"),
+		"ai-integrations/list":   filepath.Join(dir, "ai-integrations", "list.html"),
+		"ai-integrations/form":   filepath.Join(dir, "ai-integrations", "form.html"),
 	}
 
 	tpls := make(map[string]*template.Template)
 
-	// Standalone pages (login, setup — no layout)
-	for _, name := range []string{"login", "setup"} {
-		t := template.Must(template.New(name + ".html").Funcs(funcMap).ParseFiles(pages[name]))
+	for name, file := range standalone {
+		t := template.Must(template.New(filepath.Base(file)).Funcs(funcMap).ParseFiles(file))
 		tpls[name] = t
 	}
 
-	// Pages with layout
-	for _, name := range []string{"dashboard"} {
+	for name, file := range withLayout {
 		t := template.Must(
-			template.New("layout.html").Funcs(funcMap).ParseFiles(layoutFile, pages[name]),
+			template.New("layout.html").Funcs(funcMap).ParseFiles(layoutFile, file),
 		)
 		tpls[name] = t
 	}

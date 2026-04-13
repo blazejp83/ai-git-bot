@@ -18,6 +18,8 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 	adminSvc := auth.NewAdminService(database)
 	tpl := web.LoadTemplates("web/templates")
 	handlers := web.NewHandlers(tpl, adminSvc, sm, database, enc)
+	aiHandlers := web.NewAiHandlers(tpl, database, enc)
+	oauthHandlers := web.NewOAuthHandlers(database, enc)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -59,6 +61,17 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 		})
 		r.Get("/dashboard", handlers.Dashboard)
+
+		// AI Integrations CRUD
+		r.Get("/ai-integrations", aiHandlers.List)
+		r.Get("/ai-integrations/new", aiHandlers.NewForm)
+		r.Get("/ai-integrations/{id}/edit", aiHandlers.EditForm)
+		r.Post("/ai-integrations/save", aiHandlers.Save)
+		r.Post("/ai-integrations/{id}/delete", aiHandlers.Delete)
+
+		// OAuth for AI Integrations
+		r.Get("/ai-integrations/{id}/oauth", oauthHandlers.StartOAuth)
+		r.Post("/ai-integrations/{id}/oauth/revoke", oauthHandlers.RevokeOAuth)
 	})
 
 	slog.Info("Routes registered")
