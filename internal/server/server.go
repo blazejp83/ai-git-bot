@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/tmseidel/ai-git-bot/internal/auth"
+	"github.com/tmseidel/ai-git-bot/internal/bot"
 	"github.com/tmseidel/ai-git-bot/internal/config"
 	"github.com/tmseidel/ai-git-bot/internal/encrypt"
 	"github.com/tmseidel/ai-git-bot/internal/web"
@@ -45,12 +46,9 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 	})
 
 	// API routes (no auth — webhook secret in URL)
+	webhookHandler := bot.NewWebhookHandler(database)
 	r.Route("/api", func(r chi.Router) {
-		r.Post("/webhook/{secret}", func(w http.ResponseWriter, r *http.Request) {
-			// Placeholder — will be implemented in Phase 5
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"status":"ok"}`))
-		})
+		r.Post("/webhook/{secret}", webhookHandler.Handle)
 	})
 
 	// Authenticated web routes
