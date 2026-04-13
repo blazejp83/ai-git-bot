@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/tmseidel/ai-git-bot/internal/agent"
 	"github.com/tmseidel/ai-git-bot/internal/ai"
+	"github.com/tmseidel/ai-git-bot/internal/config"
 	"github.com/tmseidel/ai-git-bot/internal/encrypt"
 	"github.com/tmseidel/ai-git-bot/internal/prompt"
 	"github.com/tmseidel/ai-git-bot/internal/repo"
@@ -20,20 +22,24 @@ import (
 
 // WebhookHandler handles incoming webhooks from all git platforms.
 type WebhookHandler struct {
-	db            *sql.DB
-	aiFactory     *ai.ClientFactory
-	repoFactory   *repo.ClientFactory
-	promptService *prompt.Service
-	sessions      *review.SessionService
+	db             *sql.DB
+	cfg            *config.Config
+	aiFactory      *ai.ClientFactory
+	repoFactory    *repo.ClientFactory
+	promptService  *prompt.Service
+	sessions       *review.SessionService
+	agentSessions  *agent.SessionService
 }
 
-func NewWebhookHandler(db *sql.DB, enc *encrypt.Service, promptSvc *prompt.Service) *WebhookHandler {
+func NewWebhookHandler(db *sql.DB, enc *encrypt.Service, promptSvc *prompt.Service, cfg *config.Config) *WebhookHandler {
 	return &WebhookHandler{
 		db:            db,
+		cfg:           cfg,
 		aiFactory:     ai.NewClientFactory(enc),
 		repoFactory:   repo.NewClientFactory(enc),
 		promptService: promptSvc,
 		sessions:      review.NewSessionService(db),
+		agentSessions: agent.NewSessionService(db),
 	}
 }
 
@@ -158,8 +164,21 @@ func (h *WebhookHandler) dispatch(botID int64, botName, botUsername string, aiIn
 		}
 	case "assigned":
 		if event.Issue != nil && agentEnabled {
-			slog.Info("Issue assigned to bot — agent not yet implemented", "issue", event.Issue.Number)
-			// TODO: Phase 7 — wire up IssueImplementationService
+			agentPrompt := h.promptService.GetSystemPrompt("agent")
+			agentCfg := agent.AgentConfig{
+				MaxFiles:            h.cfg.AgentMaxFiles,
+				MaxTokens:           h.cfg.AgentMaxTokens,
+				BranchPrefix:        h.cfg.AgentBranchPrefix,
+				MaxFileContentChars: h.cfg.AgentMaxFileContentChar,
+				MaxTreeFiles:        500,
+				ValidationEnabled:   h.cfg.AgentValidationEnabled,
+				MaxRetries:          h.cfg.AgentValidationMaxRetries,
+			}
+			agentSvc := agent.NewService(repoClient, aiClient, h.agentSessions, agentCfg, agentPrompt)
+			agentSvc.HandleIssueAssigned(ctx, event)
+		}
+		if event.Issue != nil && !agentEnabled {
+			// Check if this is a follow-up comment on an existing agent session
 		}
 	}
 }

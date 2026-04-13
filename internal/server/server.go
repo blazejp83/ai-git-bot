@@ -48,7 +48,7 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 
 	// API routes (no auth — webhook secret in URL)
 	promptSvc := prompt.NewService(cfg.PromptsDir)
-	webhookHandler := bot.NewWebhookHandler(database, enc, promptSvc)
+	webhookHandler := bot.NewWebhookHandler(database, enc, promptSvc, cfg)
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/webhook/{secret}", webhookHandler.Handle)
 	})
