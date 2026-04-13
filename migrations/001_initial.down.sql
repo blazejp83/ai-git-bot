@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS agent_file_changes;
+DROP TABLE IF EXISTS agent_sessions;
+DROP TABLE IF EXISTS conversation_messages;
+DROP TABLE IF EXISTS review_sessions;
+DROP TABLE IF EXISTS bots;
+DROP TABLE IF EXISTS git_integrations;
+DROP TABLE IF EXISTS ai_integrations;
+DROP TABLE IF EXISTS admin_users;
+DROP TABLE IF EXISTS schema_migrations;
