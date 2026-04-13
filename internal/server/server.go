@@ -22,6 +22,8 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 	handlers := web.NewHandlers(tpl, adminSvc, sm, database, enc)
 	aiHandlers := web.NewAiHandlers(tpl, database, enc)
 	oauthHandlers := web.NewOAuthHandlers(database, enc)
+	botHandlers := web.NewBotHandlers(tpl, database, enc)
+	gitHandlers := web.NewGitHandlers(tpl, database, enc)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -72,6 +74,20 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 		// OAuth for AI Integrations
 		r.Get("/ai-integrations/{id}/oauth", oauthHandlers.StartOAuth)
 		r.Post("/ai-integrations/{id}/oauth/revoke", oauthHandlers.RevokeOAuth)
+
+		// Bots CRUD
+		r.Get("/bots", botHandlers.List)
+		r.Get("/bots/new", botHandlers.NewForm)
+		r.Get("/bots/{id}/edit", botHandlers.EditForm)
+		r.Post("/bots/save", botHandlers.Save)
+		r.Post("/bots/{id}/delete", botHandlers.Delete)
+
+		// Git Integrations CRUD
+		r.Get("/git-integrations", gitHandlers.List)
+		r.Get("/git-integrations/new", gitHandlers.NewForm)
+		r.Get("/git-integrations/{id}/edit", gitHandlers.EditForm)
+		r.Post("/git-integrations/save", gitHandlers.Save)
+		r.Post("/git-integrations/{id}/delete", gitHandlers.Delete)
 	})
 
 	slog.Info("Routes registered")

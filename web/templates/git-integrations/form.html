@@ -1,0 +1,46 @@
+{{define "title"}}{{if .IsEdit}}Edit{{else}}New{{end}} Git Integration - AI Git Bot{{end}}
+
+{{define "content"}}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-git"></i> {{if .IsEdit}}Edit Git Integration{{else}}New Git Integration{{end}}</h2>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form action="/git-integrations/save" method="post">
+            {{if .IsEdit}}<input type="hidden" name="id" value="{{.Integration.ID}}"/>{{end}}
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label for="name" class="form-label">Name</label>
+                    <input type="text" class="form-control" id="name" name="name" value="{{.Integration.Name}}" placeholder="e.g. My Gitea Server" required/>
+                </div>
+                <div class="col-md-6">
+                    <label for="providerType" class="form-label">Provider Type</label>
+                    <select class="form-select" id="providerType" name="providerType" required>
+                        <option value="">Select a provider...</option>
+                        {{range .ProviderTypes}}
+                        <option value="{{.}}"{{if eq . $.Integration.ProviderType}} selected{{end}}>{{.}}</option>
+                        {{end}}
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label for="url" class="form-label">URL</label>
+                    <input type="url" class="form-control" id="url" name="url" value="{{.Integration.URL}}" placeholder="e.g. https://gitea.example.com"/>
+                </div>
+                <div class="col-md-6">
+                    <label for="username" class="form-label">Username (Bitbucket only)</label>
+                    <input type="text" class="form-control" id="username" name="username" value="{{.Integration.Username}}" placeholder="e.g. your-bitbucket-username"/>
+                </div>
+                <div class="col-md-6">
+                    <label for="token" class="form-label">Token</label>
+                    <input type="password" class="form-control" id="token" name="token" placeholder="{{if .IsEdit}}Leave blank to keep current{{else}}Enter access token{{end}}"/>
+                </div>
+            </div>
+            <div class="mt-4">
+                <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+                <a href="/git-integrations" class="btn btn-secondary ms-2"><i class="bi bi-x-lg"></i> Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{{end}}

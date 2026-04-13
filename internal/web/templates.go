@@ -30,9 +30,13 @@ func LoadTemplates(dir string) *Templates {
 		"setup": filepath.Join(dir, "setup.html"),
 	}
 	withLayout := map[string]string{
-		"dashboard":              filepath.Join(dir, "dashboard.html"),
-		"ai-integrations/list":   filepath.Join(dir, "ai-integrations", "list.html"),
-		"ai-integrations/form":   filepath.Join(dir, "ai-integrations", "form.html"),
+		"dashboard":               filepath.Join(dir, "dashboard.html"),
+		"ai-integrations/list":    filepath.Join(dir, "ai-integrations", "list.html"),
+		"ai-integrations/form":    filepath.Join(dir, "ai-integrations", "form.html"),
+		"bots/list":               filepath.Join(dir, "bots", "list.html"),
+		"bots/form":               filepath.Join(dir, "bots", "form.html"),
+		"git-integrations/list":   filepath.Join(dir, "git-integrations", "list.html"),
+		"git-integrations/form":   filepath.Join(dir, "git-integrations", "form.html"),
 	}
 
 	tpls := make(map[string]*template.Template)
