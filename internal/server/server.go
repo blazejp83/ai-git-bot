@@ -11,6 +11,7 @@ import (
 	"github.com/tmseidel/ai-git-bot/internal/bot"
 	"github.com/tmseidel/ai-git-bot/internal/config"
 	"github.com/tmseidel/ai-git-bot/internal/encrypt"
+	"github.com/tmseidel/ai-git-bot/internal/prompt"
 	"github.com/tmseidel/ai-git-bot/internal/web"
 )
 
@@ -46,7 +47,8 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 	})
 
 	// API routes (no auth — webhook secret in URL)
-	webhookHandler := bot.NewWebhookHandler(database)
+	promptSvc := prompt.NewService(cfg.PromptsDir)
+	webhookHandler := bot.NewWebhookHandler(database, enc, promptSvc)
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/webhook/{secret}", webhookHandler.Handle)
 	})
