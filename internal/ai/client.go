@@ -34,4 +34,12 @@ type TokenUsage struct {
 type Client interface {
 	ReviewDiff(ctx context.Context, req ReviewRequest) (string, error)
 	Chat(ctx context.Context, history []Message, userMessage string, opts ChatOpts) (string, error)
+
+	// ChatWithTools sends a structured conversation with tool definitions.
+	// The response may contain text blocks, tool-use blocks, or both.
+	ChatWithTools(ctx context.Context, messages []ConversationMessage, tools []ToolDef, opts ChatOpts) (*ChatResponse, error)
+
+	// SupportsNativeTools returns true if the provider supports structured tool calling.
+	// When false, the runner uses a JSON-mode shim instead.
+	SupportsNativeTools() bool
 }

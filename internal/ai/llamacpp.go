@@ -11,7 +11,6 @@ import (
 	"strings"
 )
 
-// LlamaCppClient implements Client for llama.cpp server's /completion endpoint.
 type LlamaCppClient struct {
 	cfg        Config
 	baseURL    string
@@ -19,14 +18,13 @@ type LlamaCppClient struct {
 }
 
 func NewLlamaCppClient(baseURL string, cfg Config) *LlamaCppClient {
-	return &LlamaCppClient{
-		cfg:        cfg,
-		baseURL:    baseURL,
-		httpClient: &http.Client{},
-	}
+	return &LlamaCppClient{cfg: cfg, baseURL: baseURL, httpClient: &http.Client{}}
 }
 
-// GBNF grammar for structured JSON output (used by agent feature).
+// llama.cpp doesn't support native tool calling — we use JSON shim
+func (c *LlamaCppClient) SupportsNativeTools() bool { return false }
+
+// GBNF grammar for structured JSON output
 const agentJSONGrammar = `root ::= "{" ws members ws "}" ws
 members ::= pair ("," ws pair)*
 pair ::= string ws ":" ws value
@@ -41,7 +39,7 @@ var stopSequences = []string{
 	"<|im_start|>", "<|im_end|>", "<|end|>", "<|eot_id|>", "<|endoftext|>",
 }
 
-type llamaCppRequest struct {
+type lcppRequest struct {
 	Prompt           string   `json:"prompt"`
 	NPredict         int      `json:"n_predict"`
 	Stream           bool     `json:"stream"`
@@ -56,21 +54,19 @@ type llamaCppRequest struct {
 	Grammar          string   `json:"grammar,omitempty"`
 }
 
-type llamaCppResponse struct {
+type lcppResponse struct {
 	Content         string `json:"content"`
 	TokensEvaluated *int   `json:"tokens_evaluated"`
 	TokensPredicted *int   `json:"tokens_predicted"`
 	StoppedLimit    *bool  `json:"stopped_limit"`
 }
 
+// --- Existing methods ---
+
 func (c *LlamaCppClient) ReviewDiff(ctx context.Context, req ReviewRequest) (string, error) {
 	return reviewDiffCommon(c.cfg, req, func(systemPrompt, model string, maxTokens int, userMsg string) (string, error) {
 		prompt := buildChatMLPrompt(systemPrompt, userMsg)
-		grammar := ""
-		if shouldUseJsonGrammar(systemPrompt) {
-			grammar = agentJSONGrammar
-		}
-		return c.doRequest(ctx, prompt, maxTokens, grammar, "review")
+		return c.doRequest(ctx, prompt, maxTokens, "", "review")
 	})
 }
 
@@ -85,20 +81,110 @@ func (c *LlamaCppClient) Chat(ctx context.Context, history []Message, userMessag
 	})
 }
 
-// buildChatMLPrompt creates a ChatML-format prompt for a single user message.
+// --- ChatWithTools (JSON shim) ---
+
+func (c *LlamaCppClient) ChatWithTools(ctx context.Context, messages []ConversationMessage, tools []ToolDef, opts ChatOpts) (*ChatResponse, error) {
+	model := resolveModel(opts.ModelOverride, c.cfg.Model)
+	_ = model // llama.cpp doesn't use model name in request
+	prompt := resolvePrompt(opts.SystemPrompt)
+	maxTokens := c.cfg.MaxTokens
+	if opts.MaxTokensOverride > 0 {
+		maxTokens = opts.MaxTokensOverride
+	}
+
+	// Inject tool descriptions into system prompt
+	toolPrompt := buildToolSystemPrompt(prompt, tools)
+
+	// Build ChatML prompt from conversation
+	var convMsgs []Message
+	for _, m := range messages {
+		if len(m.ToolResults) > 0 {
+			// Format tool results as user message
+			var sb strings.Builder
+			for _, tr := range m.ToolResults {
+				fmt.Fprintf(&sb, "Tool result for %s:\n%s\n", tr.ToolName, tr.Content)
+			}
+			convMsgs = append(convMsgs, Message{Role: "user", Content: sb.String()})
+		} else if len(m.ToolCalls) > 0 {
+			// Format tool calls as assistant message
+			raw, _ := json.Marshal(map[string]any{"tool": m.ToolCalls[0].Name, "input": m.ToolCalls[0].Input})
+			convMsgs = append(convMsgs, Message{Role: "assistant", Content: string(raw)})
+		} else {
+			convMsgs = append(convMsgs, Message{Role: m.Role, Content: m.Content})
+		}
+	}
+
+	chatPrompt := buildChatMLPromptFromHistory(toolPrompt, convMsgs)
+	text, err := c.doRequest(ctx, chatPrompt, maxTokens, agentJSONGrammar, "tools")
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse JSON response into tool call or text
+	return parseShimResponse(text), nil
+}
+
+func buildToolSystemPrompt(basePrompt string, tools []ToolDef) string {
+	var sb strings.Builder
+	sb.WriteString(basePrompt)
+	sb.WriteString("\n\nYou have the following tools available. To use a tool, respond with ONLY a JSON object:\n")
+	sb.WriteString(`{"tool": "<tool_name>", "input": {<arguments>}}`)
+	sb.WriteString("\n\nAvailable tools:\n")
+	for _, t := range tools {
+		sb.WriteString("- ")
+		sb.WriteString(t.Name)
+		sb.WriteString(": ")
+		sb.WriteString(t.Description)
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\nWhen you have completed the task, call the \"done\" tool with your final result.\n")
+	sb.WriteString("If you want to say something without calling a tool, use: {\"tool\": \"done\", \"input\": {\"result\": \"your message\"}}\n")
+	return sb.String()
+}
+
+func parseShimResponse(text string) *ChatResponse {
+	text = strings.TrimSpace(text)
+
+	// Try to parse as JSON tool call
+	var toolJSON struct {
+		Tool  string         `json:"tool"`
+		Input map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(text), &toolJSON); err == nil && toolJSON.Tool != "" {
+		raw, _ := json.Marshal(toolJSON.Input)
+		return &ChatResponse{
+			StopReason: "tool_use",
+			Content: []ContentBlock{{
+				Type: "tool_use",
+				ToolCall: &ToolCall{
+					ID:       fmt.Sprintf("shim_%d", len(text)),
+					Name:     toolJSON.Tool,
+					Input:    toolJSON.Input,
+					RawInput: string(raw),
+				},
+			}},
+		}
+	}
+
+	// Not a tool call — return as text
+	return &ChatResponse{
+		StopReason: "end_turn",
+		Content:    []ContentBlock{{Type: "text", Text: text}},
+	}
+}
+
+// --- Helpers ---
+
 func buildChatMLPrompt(systemPrompt, userMessage string) string {
 	var sb strings.Builder
 	sb.WriteString("<|im_start|>system\n")
 	sb.WriteString(systemPrompt)
-	sb.WriteString("<|im_end|>\n")
-	sb.WriteString("<|im_start|>user\n")
+	sb.WriteString("<|im_end|>\n<|im_start|>user\n")
 	sb.WriteString(userMessage)
-	sb.WriteString("<|im_end|>\n")
-	sb.WriteString("<|im_start|>assistant\n")
+	sb.WriteString("<|im_end|>\n<|im_start|>assistant\n")
 	return sb.String()
 }
 
-// buildChatMLPromptFromHistory creates a ChatML-format prompt from conversation history.
 func buildChatMLPromptFromHistory(systemPrompt string, messages []Message) string {
 	var sb strings.Builder
 	sb.WriteString("<|im_start|>system\n")
@@ -125,29 +211,16 @@ func shouldUseJsonGrammar(systemPrompt string) bool {
 }
 
 func (c *LlamaCppClient) doRequest(ctx context.Context, prompt string, maxTokens int, grammar, logContext string) (string, error) {
-	reqBody := llamaCppRequest{
-		Prompt:           prompt,
-		NPredict:         maxTokens,
-		Stream:           false,
-		Stop:             stopSequences,
-		Temperature:      0.7,
-		TopP:             0.9,
-		TopK:             40,
-		RepeatPenalty:    1.1,
-		FrequencyPenalty: 0.0,
-		PresencePenalty:  0.0,
-		CachePrompt:     true,
+	reqBody := lcppRequest{
+		Prompt: prompt, NPredict: maxTokens, Stream: false,
+		Stop: stopSequences, Temperature: 0.7, TopP: 0.9, TopK: 40,
+		RepeatPenalty: 1.1, CachePrompt: true,
 	}
 	if grammar != "" {
 		reqBody.Grammar = grammar
-		slog.Info("llama.cpp request: GBNF grammar enabled", "context", logContext)
 	}
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
-	}
-
+	body, _ := json.Marshal(reqBody)
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/completion", bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -159,15 +232,15 @@ func (c *LlamaCppClient) doRequest(ctx context.Context, prompt string, maxTokens
 		return "", fmt.Errorf("llamacpp request: %w", err)
 	}
 	defer resp.Body.Close()
-
 	respBody, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("llamacpp API error (HTTP %d): %s", resp.StatusCode, string(respBody))
 	}
 
-	var lcResp llamaCppResponse
+	var lcResp lcppResponse
 	if err := json.Unmarshal(respBody, &lcResp); err != nil {
-		return "", fmt.Errorf("parse llamacpp response: %w", err)
+		return "", fmt.Errorf("parse response: %w", err)
 	}
 
 	if lcResp.Content == "" {
@@ -176,11 +249,7 @@ func (c *LlamaCppClient) doRequest(ctx context.Context, prompt string, maxTokens
 
 	if lcResp.TokensEvaluated != nil && lcResp.TokensPredicted != nil {
 		slog.Info("llama.cpp response", "context", logContext,
-			"prompt_tokens", *lcResp.TokensEvaluated,
-			"generated_tokens", *lcResp.TokensPredicted)
-	}
-	if lcResp.StoppedLimit != nil && *lcResp.StoppedLimit {
-		slog.Warn("llama.cpp response truncated due to max token limit", "context", logContext)
+			"prompt_tokens", *lcResp.TokensEvaluated, "generated_tokens", *lcResp.TokensPredicted)
 	}
 
 	return lcResp.Content, nil
