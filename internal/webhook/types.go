@@ -33,6 +33,7 @@ type PullRequest struct {
 	Merged bool
 	Head   Ref
 	Base   Ref
+	Author string // PR author login
 }
 
 type Ref struct {

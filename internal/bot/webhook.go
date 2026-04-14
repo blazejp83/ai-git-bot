@@ -146,7 +146,15 @@ func (h *WebhookHandler) dispatch(botID int64, botName, botUsername string, aiIn
 		if event.Comment != nil && hasBotMention {
 			prNum := resolvePRNumber(event)
 			if prNum > 0 {
-				h.runReviewFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, event.Comment.Body, promptText)
+				commenter := event.Comment.User
+				if commenter == "" {
+					commenter = event.Sender.Login
+				}
+				prAuthor := ""
+				if event.PullRequest != nil {
+					prAuthor = event.PullRequest.Author
+				}
+				h.runReviewFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, event.Comment.Body, promptText, commenter, prAuthor)
 			}
 		}
 
@@ -244,7 +252,7 @@ When you're done, call the "done" tool with your review as markdown.`, pr.Title,
 	slog.Info("Review completed", "pr", pr.Number, "turns", result.TurnCount)
 }
 
-func (h *WebhookHandler) runReviewFollowup(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, commentBody, promptText string) {
+func (h *WebhookHandler) runReviewFollowup(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, commentBody, promptText, commenter, prAuthor string) {
 	// Try to load existing session
 	session, err := runner.LoadSession(h.db, owner, repoName, "pr", prNum)
 	if err != nil {
@@ -269,7 +277,14 @@ func (h *WebhookHandler) runReviewFollowup(ctx context.Context, aiClient ai.Clie
 
 	session.SaveMessage("assistant", "text", response, "", "", "")
 
-	comment := "## Bot Response\n\n" + response + "\n\n---\n*Response by AI Git Bot*"
+	// Mark response when a third-party (not the PR author) asked the question
+	isThirdParty := prAuthor != "" && !strings.EqualFold(commenter, prAuthor)
+	var comment string
+	if isThirdParty {
+		comment = fmt.Sprintf("## Bot Response\n\n*(Responding to @%s's question)*\n\n%s\n\n---\n*Response by AI Git Bot*", commenter, response)
+	} else {
+		comment = "## Bot Response\n\n" + response + "\n\n---\n*Response by AI Git Bot*"
+	}
 	repoClient.PostComment(ctx, owner, repoName, prNum, comment)
 }
 

@@ -69,6 +69,22 @@ func parsePR(pr map[string]any) *PullRequest {
 		Merged: merged,
 	}
 
+	// Extract PR author from user/author object
+	if user, ok := pr["user"].(map[string]any); ok {
+		result.Author = str(user, "login")
+		if result.Author == "" {
+			result.Author = str(user, "username")
+		}
+	}
+	if result.Author == "" {
+		if author, ok := pr["author"].(map[string]any); ok {
+			result.Author = str(author, "login")
+			if result.Author == "" {
+				result.Author = str(author, "username")
+			}
+		}
+	}
+
 	if head, ok := pr["head"].(map[string]any); ok {
 		result.Head = Ref{RefName: str(head, "ref"), SHA: str(head, "sha")}
 	}
