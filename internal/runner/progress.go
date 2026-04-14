@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tmseidel/ai-git-bot/internal/ai"
 	"github.com/tmseidel/ai-git-bot/internal/repo"
 )
 
@@ -16,6 +17,7 @@ type ProgressReporter interface {
 	OnToolCall(ctx context.Context, toolName string, input map[string]any)
 	OnToolResult(ctx context.Context, toolName string, output string, err error)
 	OnRateLimit(ctx context.Context, retryAfter time.Duration)
+	OnUsageLimit(ctx context.Context, err *ai.UsageLimitError)
 	OnComplete(ctx context.Context, result RunResult)
 }
 
@@ -89,6 +91,30 @@ func (r *CommentReporter) OnRateLimit(ctx context.Context, retryAfter time.Durat
 		fmt.Sprintf("**Agent**: Rate limited, pausing for %v...", retryAfter.Round(time.Second)))
 }
 
+func (r *CommentReporter) OnUsageLimit(ctx context.Context, err *ai.UsageLimitError) {
+	slog.Error("Usage limit reached", "type", err.ErrorType, "resets_at", err.ResetsAt, "plan", err.PlanType)
+
+	var msg string
+	switch err.ErrorType {
+	case "usage_limit_reached":
+		if !err.ResetsAt.IsZero() {
+			resetStr := err.ResetsAt.Format("Jan 2 at 3:04 PM MST")
+			msg = fmt.Sprintf("**Agent**: Usage limit reached. Your %s plan budget is exhausted.\n\nThe limit resets **%s**. The agent will stop now — re-trigger it after the reset.",
+				err.PlanType, resetStr)
+		} else {
+			msg = "**Agent**: Usage limit reached. Your plan budget is exhausted. Please try again later."
+		}
+	case "insufficient_quota":
+		msg = "**Agent**: Your API key has no remaining credits. Please add credits at https://platform.openai.com/account/billing"
+	case "usage_not_included":
+		msg = "**Agent**: This feature is not available on your current plan. Please upgrade your plan."
+	default:
+		msg = fmt.Sprintf("**Agent**: Usage limit error: %s", err.Message)
+	}
+
+	r.RepoClient.PostComment(ctx, r.Owner, r.Repo, r.Number, msg)
+}
+
 func (r *CommentReporter) OnComplete(ctx context.Context, result RunResult) {
 	slog.Info("Runner complete", "status", result.Status, "turns", result.TurnCount)
 }
@@ -107,6 +133,9 @@ func (r *LogReporter) OnToolResult(ctx context.Context, toolName string, output 
 }
 func (r *LogReporter) OnRateLimit(ctx context.Context, retryAfter time.Duration) {
 	slog.Warn("Rate limited", "retry_after", retryAfter)
+}
+func (r *LogReporter) OnUsageLimit(ctx context.Context, err *ai.UsageLimitError) {
+	slog.Error("Usage limit reached", "type", err.ErrorType, "resets_at", err.ResetsAt)
 }
 func (r *LogReporter) OnComplete(ctx context.Context, result RunResult) {
 	slog.Info("Complete", "status", result.Status)

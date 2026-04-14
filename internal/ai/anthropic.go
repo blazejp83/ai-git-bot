@@ -135,7 +135,7 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, messages []Conversa
 		return nil, err
 	}
 	if status == http.StatusTooManyRequests {
-		return nil, parseRateLimit(status, respBody)
+		return nil, parse429Response(status, respBody)
 	}
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("anthropic API error (HTTP %d): %s", status, string(respBody))
@@ -244,7 +244,7 @@ func (c *AnthropicClient) doSimpleRequest(ctx context.Context, model string, max
 		return "", err
 	}
 	if status == http.StatusTooManyRequests {
-		return "", parseRateLimit(status, respBody)
+		return "", parse429Response(status, respBody)
 	}
 	if status != http.StatusOK {
 		return "", fmt.Errorf("anthropic API error (HTTP %d): %s", status, string(respBody))

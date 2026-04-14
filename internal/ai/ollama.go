@@ -121,7 +121,7 @@ func (c *OllamaClient) ChatWithTools(ctx context.Context, messages []Conversatio
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, parseRateLimit(resp.StatusCode, respBody)
+		return nil, parse429Response(resp.StatusCode, respBody)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("ollama API error (HTTP %d): %s", resp.StatusCode, string(respBody))

@@ -84,7 +84,7 @@ func (r *ChatResponse) HasToolCalls() bool {
 	return false
 }
 
-// RateLimitError is returned when the AI provider rate-limits us.
+// RateLimitError is returned on temporary 429s (retry in seconds).
 type RateLimitError struct {
 	StatusCode int
 	RetryAfter time.Duration
@@ -94,3 +94,23 @@ type RateLimitError struct {
 func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("rate limited (HTTP %d), retry after %v", e.StatusCode, e.RetryAfter)
 }
+
+// UsageLimitError is returned when the user has exhausted their usage cap
+// (e.g. ChatGPT Plus 5-hour limit). This is NOT retryable with backoff —
+// the agent must stop and inform the user when the limit resets.
+type UsageLimitError struct {
+	ErrorType  string    // "usage_limit_reached", "insufficient_quota", "usage_not_included"
+	Message    string    // human-readable message
+	ResetsAt   time.Time // when the limit resets (zero if unknown)
+	PlanType   string    // "free", "plus", "pro", "team", etc.
+}
+
+func (e *UsageLimitError) Error() string {
+	if !e.ResetsAt.IsZero() {
+		return fmt.Sprintf("usage limit reached (%s), resets at %s", e.ErrorType, e.ResetsAt.Format("Jan 2 15:04 MST"))
+	}
+	return fmt.Sprintf("usage limit reached (%s): %s", e.ErrorType, e.Message)
+}
+
+// IsRetryable returns false — usage limits require waiting for the reset window.
+func (e *UsageLimitError) IsRetryable() bool { return false }

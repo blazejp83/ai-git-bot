@@ -8,7 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
+	"strings"
 	"time"
 )
 
@@ -152,7 +152,7 @@ func (c *OpenAIClient) ChatWithTools(ctx context.Context, messages []Conversatio
 		return nil, err
 	}
 	if status == http.StatusTooManyRequests {
-		return nil, parseRateLimit(status, respBody)
+		return nil, parse429Response(status, respBody)
 	}
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("openai API error (HTTP %d): %s", status, string(respBody))
@@ -282,7 +282,7 @@ func (c *OpenAIClient) doSimpleRequest(ctx context.Context, model string, maxTok
 		return "", err
 	}
 	if status == http.StatusTooManyRequests {
-		return "", parseRateLimit(status, respBody)
+		return "", parse429Response(status, respBody)
 	}
 	if status != http.StatusOK {
 		return "", fmt.Errorf("openai API error (HTTP %d): %s", status, string(respBody))
@@ -306,32 +306,91 @@ func (c *OpenAIClient) doSimpleRequest(ctx context.Context, model string, maxTok
 	return *resp.Choices[0].Message.Content, nil
 }
 
-func parseRateLimit(status int, body []byte) *RateLimitError {
-	err := &RateLimitError{StatusCode: status, Body: string(body)}
-	// Try to parse Retry-After from body or use default
-	err.RetryAfter = 5 * time.Second
-	// Attempt to extract retry-after from error body
+// parse429Response parses a 429 response and returns either a retryable
+// RateLimitError or a non-retryable UsageLimitError.
+func parse429Response(status int, body []byte) error {
 	var errResp struct {
 		Error struct {
+			Code    string `json:"code"`
 			Message string `json:"message"`
+			Type    string `json:"type"`
 		} `json:"error"`
+		// OpenAI usage limit response fields (top-level for some endpoints)
+		ErrorType string `json:"error_type"`
+		ResetAt   int64  `json:"resets_at"`
+		PlanType  string `json:"plan_type"`
 	}
-	if json.Unmarshal(body, &errResp) == nil {
-		// Some providers include seconds in the message
-		if msg := errResp.Error.Message; msg != "" {
-			slog.Warn("Rate limited", "message", msg)
+	json.Unmarshal(body, &errResp)
+
+	code := errResp.Error.Code
+	if code == "" {
+		code = errResp.ErrorType
+	}
+	msg := errResp.Error.Message
+
+	slog.Warn("429 response", "code", code, "message", msg)
+
+	switch code {
+	case "usage_limit_reached":
+		// Hard usage cap — user's 5-hour/monthly budget exhausted
+		ule := &UsageLimitError{
+			ErrorType: code,
+			Message:   msg,
+			PlanType:  errResp.PlanType,
+		}
+		if errResp.ResetAt > 0 {
+			ule.ResetsAt = time.Unix(errResp.ResetAt, 0)
+		}
+		return ule
+
+	case "insufficient_quota":
+		return &UsageLimitError{
+			ErrorType: code,
+			Message:   "API key has no remaining credits. Add credits at https://platform.openai.com/account/billing",
+		}
+
+	case "usage_not_included":
+		return &UsageLimitError{
+			ErrorType: code,
+			Message:   "This feature is not available on your plan. Upgrade at https://platform.openai.com",
+		}
+
+	default:
+		// Temporary rate limit — retryable
+		retryAfter := 5 * time.Second
+		// Try to extract delay from message (e.g. "try again in 28ms")
+		if d := parseRetryDelay(msg); d > 0 {
+			retryAfter = d
+		}
+		return &RateLimitError{
+			StatusCode: status,
+			RetryAfter: retryAfter,
+			Body:       string(body),
 		}
 	}
-	return err
 }
 
-// parseRetryAfterHeader parses the Retry-After header value.
-func parseRetryAfterHeader(val string) time.Duration {
-	if val == "" {
+// parseRetryDelay extracts a duration from messages like "try again in 28ms" or "try again in 1.5 seconds".
+func parseRetryDelay(msg string) time.Duration {
+	msg = strings.ToLower(msg)
+	idx := strings.Index(msg, "try again in")
+	if idx < 0 {
 		return 0
 	}
-	if secs, err := strconv.Atoi(val); err == nil {
-		return time.Duration(secs) * time.Second
+	after := strings.TrimSpace(msg[idx+len("try again in"):])
+
+	var val float64
+	var unit string
+	if _, err := fmt.Sscanf(after, "%f%s", &val, &unit); err == nil {
+		unit = strings.TrimSuffix(strings.TrimSpace(unit), ".")
+		switch {
+		case strings.HasPrefix(unit, "ms"):
+			return time.Duration(val * float64(time.Millisecond))
+		case strings.HasPrefix(unit, "s"):
+			return time.Duration(val * float64(time.Second))
+		case strings.HasPrefix(unit, "m"):
+			return time.Duration(val * float64(time.Minute))
+		}
 	}
 	return 0
 }
