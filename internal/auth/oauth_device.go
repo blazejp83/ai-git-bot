@@ -7,10 +7,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
 )
+
+func truncateToken(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
 
 // DeviceCodeResponse is returned when requesting a device code.
 type DeviceCodeResponse struct {
@@ -183,6 +191,16 @@ func exchangeCodeWithVerifier(ctx context.Context, cfg OAuthConfig, code, verifi
 	if err := json.Unmarshal(body, &tokens); err != nil {
 		return OAuthTokens{}, fmt.Errorf("parse token response: %w", err)
 	}
+
+	// Debug: log token types to diagnose which is which
+	slog.Info("Token exchange result",
+		"has_access_token", tokens.AccessToken != "",
+		"access_token_prefix", truncateToken(tokens.AccessToken, 15),
+		"has_id_token", tokens.IDToken != "",
+		"id_token_prefix", truncateToken(tokens.IDToken, 15),
+		"has_refresh_token", tokens.RefreshToken != "",
+		"expires_in", tokens.ExpiresIn,
+	)
 
 	return tokens, nil
 }

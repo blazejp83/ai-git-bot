@@ -91,6 +91,12 @@ func (f *ClientFactory) GetClient(db *sql.DB, integrationID int64) (Client, erro
 			if oauthAccountID.Valid {
 				acctID = oauthAccountID.String
 			}
+			slog.Info("OpenAI OAuth client",
+				"auth_method", authMethod,
+				"has_access_token", decrypted != "",
+				"account_id", acctID,
+				"token_prefix", truncateForLog(decrypted, 10),
+			)
 			client = NewOpenAIClientWithOAuth(apiURL, decrypted, acctID, cfg)
 		} else {
 			key := ""
@@ -126,4 +132,11 @@ func (f *ClientFactory) Evict(integrationID int64) {
 	f.mu.Lock()
 	delete(f.cache, integrationID)
 	f.mu.Unlock()
+}
+
+func truncateForLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

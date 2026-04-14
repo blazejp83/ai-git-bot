@@ -97,6 +97,10 @@ func (c *OpenAIClient) ReviewDiff(ctx context.Context, req ReviewRequest) (strin
 }
 
 func (c *OpenAIClient) Chat(ctx context.Context, history []Message, userMessage string, opts ChatOpts) (string, error) {
+	// OAuth tokens require the Responses API
+	if c.accessToken != "" {
+		return c.chatViaResponses(ctx, history, userMessage, opts)
+	}
 	return chatCommon(c.cfg, history, userMessage, opts, func(systemPrompt, model string, maxTokens int, messages []Message) (string, error) {
 		oaiMsgs := make([]oaiMsg, 0, len(messages)+1)
 		oaiMsgs = append(oaiMsgs, oaiMsg{Role: "system", Content: systemPrompt})
@@ -105,6 +109,82 @@ func (c *OpenAIClient) Chat(ctx context.Context, history []Message, userMessage 
 		}
 		return c.doSimpleRequest(ctx, model, maxTokens, oaiMsgs, "chat")
 	})
+}
+
+// chatViaResponses uses the /v1/responses endpoint for OAuth-authenticated calls.
+func (c *OpenAIClient) chatViaResponses(ctx context.Context, history []Message, userMessage string, opts ChatOpts) (string, error) {
+	model := resolveModel(opts.ModelOverride, c.cfg.Model)
+	prompt := resolvePrompt(opts.SystemPrompt)
+	maxTokens := c.cfg.MaxTokens
+	if opts.MaxTokensOverride > 0 {
+		maxTokens = opts.MaxTokensOverride
+	}
+
+	// Build input array from history + new message
+	var input []map[string]any
+	for _, m := range history {
+		input = append(input, map[string]any{"role": m.Role, "content": m.Content})
+	}
+	input = append(input, map[string]any{"role": "user", "content": userMessage})
+
+	reqBody := map[string]any{
+		"model":        model,
+		"instructions": prompt,
+		"input":        input,
+		"max_output_tokens": maxTokens,
+		"stream":       false,
+	}
+
+	body, _ := json.Marshal(reqBody)
+	hr, err := c.doHTTPResponses(ctx, body)
+	if err != nil {
+		return "", err
+	}
+	if hr.status == http.StatusTooManyRequests {
+		return "", parse429Response(hr.status, hr.body)
+	}
+	if hr.status != http.StatusOK {
+		return "", fmt.Errorf("openai responses API error (HTTP %d): %s", hr.status, string(hr.body))
+	}
+
+	// Parse responses API format
+	var resp struct {
+		Output []struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+		Usage *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(hr.body, &resp); err != nil {
+		return "", fmt.Errorf("parse responses: %w", err)
+	}
+
+	if resp.Usage != nil {
+		slog.Info("OpenAI Responses API", "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens)
+	}
+
+	// Extract text from output
+	var text string
+	for _, out := range resp.Output {
+		if out.Type == "message" {
+			for _, c := range out.Content {
+				if c.Type == "output_text" {
+					text += c.Text
+				}
+			}
+		}
+	}
+
+	if text == "" {
+		return "Unable to generate response - empty output from AI.", nil
+	}
+	return text, nil
 }
 
 // --- ChatWithTools (new) ---
@@ -279,6 +359,26 @@ func (c *OpenAIClient) doHTTPFull(ctx context.Context, body []byte) (*httpResult
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("openai request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	return &httpResult{body: respBody, status: resp.StatusCode, headers: resp.Header}, nil
+}
+
+func (c *OpenAIClient) doHTTPResponses(ctx context.Context, body []byte) (*httpResult, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/responses", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	if c.accountID != "" {
+		req.Header.Set("ChatGPT-Account-ID", c.accountID)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("openai responses request: %w", err)
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
