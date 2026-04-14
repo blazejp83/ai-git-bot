@@ -1,36 +1,12 @@
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  ai-git-bot:
+    image: registry.bpds1621.synology.me/ai-git-bot:2.0.0
     ports:
       - "8080:8080"
     environment:
-      SPRING_PROFILES_ACTIVE: docker
-      DATABASE_URL: jdbc:postgresql://db:5432/giteabot
-      DATABASE_USERNAME: ${DATABASE_USERNAME:-giteabot}
-      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-giteabot}
-      # Encryption key for API keys stored in database (optional, but recommended for production)
-      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: unless-stopped
-
-  db:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: giteabot
-      POSTGRES_USER: ${DATABASE_USERNAME:-giteabot}
-      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-giteabot}
+      DATABASE_URL: "sqlite://data/aigitbot.db"
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USERNAME:-giteabot}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      - ./data:/data
     restart: unless-stopped
-
-volumes:
-  pgdata:
