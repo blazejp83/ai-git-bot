@@ -305,11 +305,20 @@ func (h *WebhookHandler) runReviewFollowup(ctx context.Context, aiClient ai.Clie
 		}
 	}
 
-	// For follow-ups, we add the comment as a new user message and re-run
+	// If session is new, seed it with PR context
+	messages := session.LoadMessages()
+	if len(messages) == 0 {
+		diff, _ := repoClient.GetPRDiff(ctx, owner, repoName, prNum)
+		if diff != "" {
+			prContext := fmt.Sprintf("This is a pull request in %s/%s.\n\nDiff:\n```diff\n%s\n```", owner, repoName, truncate(diff, 60000))
+			session.SaveMessage("user", "text", prContext, "", "", "")
+			session.SaveMessage("assistant", "text", "I've reviewed the pull request context. How can I help you?", "", "", "")
+		}
+	}
+
 	session.SaveMessage("user", "text", commentBody, "", "", "")
 
-	// Simple text response (no workspace needed for follow-ups)
-	messages := session.LoadMessages()
+	messages = session.LoadMessages()
 	response, err := aiClient.Chat(ctx, toSimpleMessages(messages), "", ai.ChatOpts{SystemPrompt: promptText})
 	if err != nil {
 		slog.Error("Follow-up chat failed", "err", err)
