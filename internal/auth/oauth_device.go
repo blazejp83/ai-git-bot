@@ -14,10 +14,11 @@ import (
 
 // DeviceCodeResponse is returned when requesting a device code.
 type DeviceCodeResponse struct {
-	DeviceAuthID    string `json:"device_auth_id"`
-	UserCode        string `json:"user_code"`
-	VerificationURL string `json:"verification_url"`
-	Interval        int    `json:"interval"`
+	DeviceAuthID    string          `json:"device_auth_id"`
+	UserCode        string          `json:"user_code"`
+	VerificationURL string          `json:"verification_url"`
+	RawInterval     json.RawMessage `json:"interval"`
+	Interval        int             `json:"-"`
 }
 
 // DeviceCodeTokenResponse is the polling response that contains the auth code.
@@ -55,6 +56,19 @@ func RequestDeviceCode(ctx context.Context, cfg OAuthConfig) (*DeviceCodeRespons
 	var dcr DeviceCodeResponse
 	if err := json.Unmarshal(body, &dcr); err != nil {
 		return nil, fmt.Errorf("parse device code response: %w", err)
+	}
+
+	// Parse interval — OpenAI sends it as either int or string
+	if len(dcr.RawInterval) > 0 {
+		var intVal int
+		if err := json.Unmarshal(dcr.RawInterval, &intVal); err == nil {
+			dcr.Interval = intVal
+		} else {
+			var strVal string
+			if err := json.Unmarshal(dcr.RawInterval, &strVal); err == nil {
+				fmt.Sscanf(strVal, "%d", &dcr.Interval)
+			}
+		}
 	}
 
 	if dcr.VerificationURL == "" {
