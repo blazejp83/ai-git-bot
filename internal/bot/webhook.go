@@ -196,7 +196,23 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 				if event.PullRequest != nil {
 					prAuthor = event.PullRequest.Author
 				}
-				h.runReviewFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, event.Comment.Body, promptText, commenter, prAuthor)
+
+				body := event.Comment.Body
+				trigger := extractTrigger(body)
+
+				switch trigger {
+				case "review", "fullreview":
+					// Full agentic review — clone repo, explore with tools
+					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
+					h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20))
+				case "investigate", "explore", "deep":
+					// Agentic investigation of a specific question
+					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
+					h.runAgenticFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, body, promptText, bs.reviewTurns(20), commenter, prAuthor)
+				default:
+					// Quick chat response
+					h.runReviewFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, body, promptText, commenter, prAuthor)
+				}
 			}
 		}
 
@@ -456,7 +472,115 @@ When you're done, call the "done" tool with a summary of your changes.`, issue.T
 	slog.Info("Implementation completed", "issue", issue.Number, "pr", prNumber, "turns", result.TurnCount)
 }
 
+// runAgenticFollowup runs a full agentic session to investigate a specific question on a PR.
+func (h *WebhookHandler) runAgenticFollowup(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, commentBody, promptText string, maxTurns int, commenter, prAuthor string) {
+	diff, _ := repoClient.GetPRDiff(ctx, owner, repoName, prNum)
+
+	baseBranch := "main"
+	if pr := findPREvent(nil); pr != nil {
+		baseBranch = pr.Base.RefName
+	}
+	// Try to get default branch
+	if b, err := repoClient.GetDefaultBranch(ctx, owner, repoName); err == nil && b != "" {
+		baseBranch = b
+	}
+
+	cloneURL := buildCloneURL(h.db, owner, repoName, h.repoFactory)
+	ws, err := runner.NewWorkspace(ctx, cloneURL, owner, repoName, baseBranch)
+	if err != nil {
+		slog.Error("Failed to create workspace for agentic follow-up", "err", err)
+		// Fall back to simple chat
+		h.runReviewFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, commentBody, promptText, commenter, prAuthor)
+		return
+	}
+	defer ws.Cleanup()
+
+	session, err := runner.CreateSession(h.db, runner.ModeReview, owner, repoName, prNum, "pr", promptText)
+	if err != nil {
+		slog.Error("Failed to create runner session", "err", err)
+		return
+	}
+
+	reporter := &runner.CommentReporter{
+		RepoClient: repoClient, Owner: owner, Repo: repoName, Number: prNum,
+	}
+
+	// Strip the trigger word from the comment for the prompt
+	cleanBody := stripTrigger(commentBody)
+
+	initialPrompt := fmt.Sprintf(`A user asked the following question about a pull request in %s/%s:
+
+"%s"
+
+`, owner, repoName, cleanBody)
+
+	if diff != "" {
+		initialPrompt += fmt.Sprintf("Here is the PR diff:\n```diff\n%s\n```\n\n", truncate(diff, 60000))
+	}
+
+	initialPrompt += `Explore the repository to understand the context. Read related files, search for symbols, check tests.
+When you have a thorough answer, call the "done" tool with your response.`
+
+	r := runner.New(aiClient, ws, reporter, session, runner.Config{
+		Mode:           runner.ModeReview,
+		MaxTurns:       maxTurns,
+		SystemPrompt:   promptText,
+		MaxTokens:      h.cfg.AgentMaxTokens,
+		ShellAllowlist: defaultShellAllowlist(),
+		ShellTimeout:   60,
+	})
+
+	result, err := r.Run(ctx, initialPrompt)
+	if err != nil {
+		slog.Error("Agentic follow-up failed", "err", err)
+		return
+	}
+
+	if result.Text != "" {
+		isThirdParty := prAuthor != "" && !strings.EqualFold(commenter, prAuthor)
+		var comment string
+		if isThirdParty {
+			comment = fmt.Sprintf("## Bot Response\n\n*(Responding to @%s's question — deep investigation)*\n\n%s\n\n---\n*Response by AI Git Bot*", commenter, result.Text)
+		} else {
+			comment = "## Bot Response (deep investigation)\n\n" + result.Text + "\n\n---\n*Response by AI Git Bot*"
+		}
+		repoClient.PostComment(ctx, owner, repoName, prNum, comment)
+	}
+
+	session.SetStatus("COMPLETED")
+}
+
 // --- Helpers ---
+
+// extractTrigger finds a #command in the comment body (e.g. #review, #investigate).
+func extractTrigger(body string) string {
+	lower := strings.ToLower(body)
+	triggers := []string{"#fullreview", "#review", "#investigate", "#explore", "#deep"}
+	for _, t := range triggers {
+		if strings.Contains(lower, t) {
+			return strings.TrimPrefix(t, "#")
+		}
+	}
+	return ""
+}
+
+// stripTrigger removes trigger words from the comment body.
+func stripTrigger(body string) string {
+	triggers := []string{"#fullreview", "#review", "#investigate", "#explore", "#deep"}
+	result := body
+	for _, t := range triggers {
+		result = strings.ReplaceAll(result, t, "")
+		result = strings.ReplaceAll(result, strings.ToUpper(t), "")
+	}
+	return strings.TrimSpace(result)
+}
+
+func findPREvent(event *webhook.Event) *webhook.PullRequest {
+	if event != nil && event.PullRequest != nil {
+		return event.PullRequest
+	}
+	return nil
+}
 
 func (h *WebhookHandler) recordError(botID int64, msg string) {
 	if botID > 0 {
