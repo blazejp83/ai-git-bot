@@ -145,7 +145,8 @@ func PollDeviceCode(ctx context.Context, cfg OAuthConfig, dcr *DeviceCodeRespons
 		}
 
 		// Exchange the authorization code for tokens using PKCE
-		redirectURI := fmt.Sprintf("http://localhost:%d%s", cfg.Port, CallbackPath)
+		// Device code flow uses a different redirect_uri than browser flow
+		redirectURI := cfg.Issuer + "/deviceauth/callback"
 		return exchangeCodeWithVerifier(ctx, cfg, dctr.AuthorizationCode, dctr.CodeVerifier, redirectURI)
 	}
 
