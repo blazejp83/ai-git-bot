@@ -75,7 +75,7 @@ func BrowserLogin(ctx context.Context, cfg OAuthConfig) (authURL string, tokensC
 		"state":                      {state},
 		"id_token_add_organizations": {"true"},
 		"codex_cli_simplified_flow":  {"true"},
-		"originator":                 {"ai-git-bot"},
+		"originator":                 {"codex-tui"},
 	}
 	authURL = cfg.Issuer + "/oauth/authorize?" + params.Encode()
 
