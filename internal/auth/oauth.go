@@ -19,7 +19,7 @@ const (
 	DefaultClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 	DefaultPort     = 1455
 	CallbackPath    = "/auth/callback"
-	DefaultScopes   = "openid profile email offline_access"
+	DefaultScopes   = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 )
 
 // OAuthTokens holds the tokens returned from OpenAI's OAuth flow.
@@ -66,15 +66,18 @@ func BrowserLogin(ctx context.Context, cfg OAuthConfig) (authURL string, tokensC
 	redirectURI := fmt.Sprintf("http://localhost:%d%s", cfg.Port, CallbackPath)
 
 	params := url.Values{
-		"response_type":         {"code"},
-		"client_id":             {cfg.ClientID},
-		"redirect_uri":          {redirectURI},
-		"scope":                 {cfg.Scopes},
-		"code_challenge":        {pkce.Challenge},
-		"code_challenge_method": {"S256"},
-		"state":                 {state},
+		"response_type":              {"code"},
+		"client_id":                  {cfg.ClientID},
+		"redirect_uri":               {redirectURI},
+		"scope":                      {cfg.Scopes},
+		"code_challenge":             {pkce.Challenge},
+		"code_challenge_method":      {"S256"},
+		"state":                      {state},
+		"id_token_add_organizations": {"true"},
+		"codex_cli_simplified_flow":  {"true"},
+		"originator":                 {"ai-git-bot"},
 	}
-	authURL = cfg.Issuer + "/authorize?" + params.Encode()
+	authURL = cfg.Issuer + "/oauth/authorize?" + params.Encode()
 
 	ch := make(chan OAuthResult, 1)
 
