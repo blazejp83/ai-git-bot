@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 )
 
 type AnthropicClient struct {
@@ -130,23 +131,26 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, messages []Conversa
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	respBody, status, err := c.doHTTP(ctx, body)
+	hr, err := c.doHTTPFull(ctx, body)
 	if err != nil {
 		return nil, err
 	}
-	if status == http.StatusTooManyRequests {
-		return nil, parse429Response(status, respBody)
+	if hr.status == http.StatusTooManyRequests || hr.status == 529 {
+		return nil, parse429Response(hr.status, hr.body)
 	}
-	if status != http.StatusOK {
-		return nil, fmt.Errorf("anthropic API error (HTTP %d): %s", status, string(respBody))
+	if hr.status != http.StatusOK {
+		return nil, fmt.Errorf("anthropic API error (HTTP %d): %s", hr.status, string(hr.body))
 	}
 
 	var resp anthResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
+	if err := json.Unmarshal(hr.body, &resp); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
-	result := &ChatResponse{StopReason: resp.StopReason}
+	result := &ChatResponse{
+		StopReason: resp.StopReason,
+		RateLimit:  parseAnthropicRateLimitHeaders(hr.headers),
+	}
 	if resp.Usage != nil {
 		result.Usage = &TokenUsage{
 			PromptTokens:     resp.Usage.InputTokens,
@@ -214,10 +218,10 @@ func convToAnth(m ConversationMessage) []anthMsg {
 	}
 }
 
-func (c *AnthropicClient) doHTTP(ctx context.Context, body []byte) ([]byte, int, error) {
+func (c *AnthropicClient) doHTTPFull(ctx context.Context, body []byte) (*httpResult, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.apiKey)
@@ -225,11 +229,67 @@ func (c *AnthropicClient) doHTTP(ctx context.Context, body []byte) ([]byte, int,
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("anthropic request: %w", err)
+		return nil, fmt.Errorf("anthropic request: %w", err)
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
-	return respBody, resp.StatusCode, nil
+	return &httpResult{body: respBody, status: resp.StatusCode, headers: resp.Header}, nil
+}
+
+func (c *AnthropicClient) doHTTP(ctx context.Context, body []byte) ([]byte, int, error) {
+	r, err := c.doHTTPFull(ctx, body)
+	if err != nil {
+		return nil, 0, err
+	}
+	return r.body, r.status, nil
+}
+
+// parseAnthropicRateLimitHeaders extracts usage from Anthropic-specific headers.
+func parseAnthropicRateLimitHeaders(headers http.Header) *RateLimitSnapshot {
+	// Anthropic uses utilization as 0-1 fraction
+	// Check 5-hour first (more relevant for session limits)
+	util5h := headers.Get("anthropic-ratelimit-unified-5h-utilization")
+	util7d := headers.Get("anthropic-ratelimit-unified-7d-utilization")
+
+	var used float64
+	var resetStr string
+
+	if util5h != "" {
+		fmt.Sscanf(util5h, "%f", &used)
+		used *= 100 // convert 0-1 to 0-100 percent
+		resetStr = headers.Get("anthropic-ratelimit-unified-5h-reset")
+	} else if util7d != "" {
+		fmt.Sscanf(util7d, "%f", &used)
+		used *= 100
+		resetStr = headers.Get("anthropic-ratelimit-unified-7d-reset")
+	}
+
+	if used == 0 {
+		return nil
+	}
+
+	snap := &RateLimitSnapshot{
+		UsedPercent: used,
+		LimitName:   headers.Get("anthropic-ratelimit-unified-representative-claim"),
+	}
+
+	if resetStr != "" {
+		var resetUnix int64
+		fmt.Sscanf(resetStr, "%d", &resetUnix)
+		if resetUnix > 0 {
+			snap.ResetsAt = time.Unix(resetUnix, 0)
+		}
+	}
+
+	// Also check the status header for early detection
+	status := headers.Get("anthropic-ratelimit-unified-status")
+	if status == "allowed_warning" && used < 75 {
+		// Server says we're approaching limits even though utilization looks ok
+		// Bump to 75% so our warning logic triggers
+		snap.UsedPercent = 75
+	}
+
+	return snap
 }
 
 func (c *AnthropicClient) doSimpleRequest(ctx context.Context, model string, maxTokens int, systemPrompt string, messages []anthMsg, logContext string) (string, error) {
