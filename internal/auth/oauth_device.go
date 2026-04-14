@@ -87,16 +87,18 @@ func PollDeviceCode(ctx context.Context, cfg OAuthConfig, dcr *DeviceCodeRespons
 	deadline := time.Now().Add(maxWait)
 	interval := time.Duration(dcr.Interval) * time.Second
 
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return OAuthTokens{}, ctx.Err()
-		case <-time.After(interval):
-		}
+	// Wait one full interval before first poll
+	select {
+	case <-ctx.Done():
+		return OAuthTokens{}, ctx.Err()
+	case <-time.After(interval):
+	}
 
+	for time.Now().Before(deadline) {
 		payload, _ := json.Marshal(map[string]string{
 			"device_auth_id": dcr.DeviceAuthID,
 			"user_code":      dcr.UserCode,
+			"client_id":      cfg.ClientID,
 		})
 
 		req, err := http.NewRequestWithContext(ctx, "POST",
@@ -109,14 +111,27 @@ func PollDeviceCode(ctx context.Context, cfg OAuthConfig, dcr *DeviceCodeRespons
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			continue // Transient network error, retry
+			// Transient network error — wait and retry
+			select {
+			case <-ctx.Done():
+				return OAuthTokens{}, ctx.Err()
+			case <-time.After(interval):
+			}
+			continue
 		}
 
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusTooManyRequests {
-			// Still pending — user hasn't authorized yet
+		// 202 = pending, 429 = slow down, 403 = not yet recognized
+		if resp.StatusCode == http.StatusAccepted ||
+			resp.StatusCode == http.StatusTooManyRequests ||
+			resp.StatusCode == http.StatusForbidden {
+			select {
+			case <-ctx.Done():
+				return OAuthTokens{}, ctx.Err()
+			case <-time.After(interval):
+			}
 			continue
 		}
 
