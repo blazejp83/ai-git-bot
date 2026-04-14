@@ -116,10 +116,6 @@ func (c *OpenAIClient) Chat(ctx context.Context, history []Message, userMessage 
 func (c *OpenAIClient) chatViaResponses(ctx context.Context, history []Message, userMessage string, opts ChatOpts) (string, error) {
 	model := resolveModel(opts.ModelOverride, c.cfg.Model)
 	prompt := resolvePrompt(opts.SystemPrompt)
-	maxTokens := c.cfg.MaxTokens
-	if opts.MaxTokensOverride > 0 {
-		maxTokens = opts.MaxTokensOverride
-	}
 
 	// Build input array from history + new message
 	var input []map[string]any
@@ -129,12 +125,11 @@ func (c *OpenAIClient) chatViaResponses(ctx context.Context, history []Message, 
 	input = append(input, map[string]any{"role": "user", "content": userMessage})
 
 	reqBody := map[string]any{
-		"model":             model,
-		"instructions":      prompt,
-		"input":             input,
-		"max_output_tokens": maxTokens,
-		"stream":            true,
-		"store":             false,
+		"model":        model,
+		"instructions": prompt,
+		"input":        input,
+		"stream":       true,
+		"store":        false,
 	}
 
 	body, _ := json.Marshal(reqBody)
