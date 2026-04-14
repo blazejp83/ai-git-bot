@@ -3,10 +3,12 @@ package web
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/tmseidel/ai-git-bot/internal/auth"
@@ -14,15 +16,30 @@ import (
 )
 
 type OAuthHandlers struct {
-	db  *sql.DB
-	enc *encrypt.Service
+	db       *sql.DB
+	enc      *encrypt.Service
+	tpl      *Templates
+	mu       sync.Mutex
+	pending  map[int64]*deviceCodeSession // integration ID → pending session
 }
 
-func NewOAuthHandlers(db *sql.DB, enc *encrypt.Service) *OAuthHandlers {
-	return &OAuthHandlers{db: db, enc: enc}
+type deviceCodeSession struct {
+	DeviceCode *auth.DeviceCodeResponse
+	Cancel     context.CancelFunc
+	Done       chan oauthResult
 }
 
-// StartOAuth initiates the browser-based OAuth flow for an AI integration.
+type oauthResult struct {
+	Success bool
+	Email   string
+	Error   string
+}
+
+func NewOAuthHandlers(db *sql.DB, enc *encrypt.Service, tpl *Templates) *OAuthHandlers {
+	return &OAuthHandlers{db: db, enc: enc, tpl: tpl, pending: make(map[int64]*deviceCodeSession)}
+}
+
+// StartOAuth initiates the device code flow for an AI integration.
 // GET /ai-integrations/{id}/oauth
 func (h *OAuthHandlers) StartOAuth(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
@@ -32,7 +49,6 @@ func (h *OAuthHandlers) StartOAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the integration exists
 	var name string
 	err = h.db.QueryRow("SELECT name FROM ai_integrations WHERE id = ?", id).Scan(&name)
 	if err != nil {
@@ -41,46 +57,104 @@ func (h *OAuthHandlers) StartOAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := auth.DefaultOAuthConfig()
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 
-	authURL, tokensCh, err := auth.BrowserLogin(ctx, cfg)
+	// Request device code
+	dcr, err := auth.RequestDeviceCode(ctx, cfg)
 	if err != nil {
 		cancel()
-		slog.Error("Failed to start OAuth", "err", err)
+		slog.Error("Failed to request device code", "err", err)
 		http.Redirect(w, r, fmt.Sprintf("/ai-integrations/%d/edit?error=oauth_start_failed", id), http.StatusSeeOther)
 		return
 	}
 
-	// Wait for tokens in background, store them when received
+	slog.Info("Device code flow started", "integration", name, "user_code", dcr.UserCode, "verification_url", dcr.VerificationURL)
+
+	// Store pending session
+	done := make(chan oauthResult, 1)
+	h.mu.Lock()
+	// Cancel any existing session for this integration
+	if existing, ok := h.pending[id]; ok {
+		existing.Cancel()
+	}
+	h.pending[id] = &deviceCodeSession{DeviceCode: dcr, Cancel: cancel, Done: done}
+	h.mu.Unlock()
+
+	// Poll for tokens in background
 	go func() {
 		defer cancel()
-		result := <-tokensCh
-		if result.Err != nil {
-			slog.Error("OAuth flow failed", "err", result.Err, "integration_id", id)
+		tokens, err := auth.PollDeviceCode(ctx, cfg, dcr, 15*time.Minute)
+		if err != nil {
+			slog.Error("Device code polling failed", "err", err, "integration_id", id)
+			done <- oauthResult{Error: err.Error()}
 			return
 		}
-		if err := h.storeTokens(id, result.Tokens); err != nil {
-			slog.Error("Failed to store OAuth tokens", "err", err, "integration_id", id)
-		} else {
-			slog.Info("OAuth tokens stored", "integration_id", id, "integration_name", name)
+		if err := h.storeTokens(id, tokens); err != nil {
+			slog.Error("Failed to store OAuth tokens", "err", err)
+			done <- oauthResult{Error: "Failed to store tokens: " + err.Error()}
+			return
 		}
+
+		email := ""
+		if tokens.IDToken != "" {
+			if claims, err := auth.ParseIDToken(tokens.IDToken); err == nil {
+				email = claims.Email
+			}
+		}
+		slog.Info("OAuth tokens stored via device code", "integration_id", id, "email", email)
+		done <- oauthResult{Success: true, Email: email}
 	}()
 
-	// Redirect user to OpenAI login
-	http.Redirect(w, r, authURL, http.StatusSeeOther)
+	// Render the device code page
+	h.tpl.Render(w, "oauth-device", map[string]any{
+		"IntegrationID":   id,
+		"IntegrationName": name,
+		"UserCode":        dcr.UserCode,
+		"VerificationURL": dcr.VerificationURL,
+	})
+}
+
+// PollOAuth is called by the browser to check if device code auth completed.
+// GET /ai-integrations/{id}/oauth/poll
+func (h *OAuthHandlers) PollOAuth(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, _ := strconv.ParseInt(idStr, 10, 64)
+
+	h.mu.Lock()
+	session, ok := h.pending[id]
+	h.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if !ok {
+		json.NewEncoder(w).Encode(map[string]any{"status": "no_session"})
+		return
+	}
+
+	select {
+	case result := <-session.Done:
+		// Clean up
+		h.mu.Lock()
+		delete(h.pending, id)
+		h.mu.Unlock()
+
+		if result.Success {
+			json.NewEncoder(w).Encode(map[string]any{"status": "success", "email": result.Email})
+		} else {
+			json.NewEncoder(w).Encode(map[string]any{"status": "error", "error": result.Error})
+		}
+	default:
+		json.NewEncoder(w).Encode(map[string]any{"status": "pending"})
+	}
 }
 
 // RevokeOAuth removes OAuth tokens and reverts to API key auth.
 // POST /ai-integrations/{id}/oauth/revoke
 func (h *OAuthHandlers) RevokeOAuth(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "Invalid integration ID", http.StatusBadRequest)
-		return
-	}
+	id, _ := strconv.ParseInt(idStr, 10, 64)
 
-	_, err = h.db.Exec(`
+	h.db.Exec(`
 		UPDATE ai_integrations
 		SET auth_method = 'api_key',
 		    access_token = NULL, refresh_token = NULL, id_token = NULL,
@@ -88,27 +162,19 @@ func (h *OAuthHandlers) RevokeOAuth(w http.ResponseWriter, r *http.Request) {
 		    updated_at = ?
 		WHERE id = ?
 	`, time.Now().UTC(), id)
-	if err != nil {
-		slog.Error("Failed to revoke OAuth", "err", err)
-	}
 
 	http.Redirect(w, r, fmt.Sprintf("/ai-integrations/%d/edit", id), http.StatusSeeOther)
 }
 
 func (h *OAuthHandlers) storeTokens(integrationID int64, tokens auth.OAuthTokens) error {
-	// Parse id_token for user info
 	var email, accountID string
 	if tokens.IDToken != "" {
-		claims, err := auth.ParseIDToken(tokens.IDToken)
-		if err != nil {
-			slog.Warn("Failed to parse id_token", "err", err)
-		} else {
+		if claims, err := auth.ParseIDToken(tokens.IDToken); err == nil {
 			email = claims.Email
 			accountID = claims.AccountID
 		}
 	}
 
-	// Encrypt tokens
 	accessToken, err := h.enc.Encrypt(tokens.AccessToken)
 	if err != nil {
 		return fmt.Errorf("encrypt access token: %w", err)
