@@ -89,6 +89,22 @@ func (h *OAuthHandlers) StartOAuth(w http.ResponseWriter, r *http.Request) {
 			done <- oauthResult{Error: err.Error()}
 			return
 		}
+
+		slog.Info("Initial tokens received, refreshing to get full scopes",
+			"has_refresh_token", tokens.RefreshToken != "")
+
+		// Immediately refresh the token — the initial exchange token may have
+		// limited scopes, but refresh grants the full set (including api.responses.write)
+		if tokens.RefreshToken != "" {
+			refreshResult, err := auth.RefreshTokens(ctx, cfg, tokens.RefreshToken)
+			if err != nil {
+				slog.Warn("Token refresh after exchange failed, using original tokens", "err", err)
+			} else {
+				slog.Info("Token refreshed successfully")
+				tokens = refreshResult.Tokens
+			}
+		}
+
 		if err := h.storeTokens(id, tokens); err != nil {
 			slog.Error("Failed to store OAuth tokens", "err", err)
 			done <- oauthResult{Error: "Failed to store tokens: " + err.Error()}
