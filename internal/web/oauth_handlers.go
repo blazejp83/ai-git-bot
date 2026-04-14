@@ -90,18 +90,17 @@ func (h *OAuthHandlers) StartOAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		slog.Info("Initial tokens received, refreshing to get full scopes",
-			"has_refresh_token", tokens.RefreshToken != "")
+		slog.Info("Initial tokens received, exchanging id_token for API key")
 
-		// Immediately refresh the token — the initial exchange token may have
-		// limited scopes, but refresh grants the full set (including api.responses.write)
-		if tokens.RefreshToken != "" {
-			refreshResult, err := auth.RefreshTokens(ctx, cfg, tokens.RefreshToken)
+		// Exchange id_token for an OpenAI API key — this is how Codex CLI
+		// converts ChatGPT OAuth tokens into usable API credentials.
+		if tokens.IDToken != "" {
+			apiKey, err := auth.ExchangeForAPIKey(ctx, cfg, tokens.IDToken)
 			if err != nil {
-				slog.Warn("Token refresh after exchange failed, using original tokens", "err", err)
+				slog.Warn("API key exchange failed, using original access_token", "err", err)
 			} else {
-				slog.Info("Token refreshed successfully")
-				tokens = refreshResult.Tokens
+				slog.Info("API key obtained via token exchange")
+				tokens.AccessToken = apiKey
 			}
 		}
 

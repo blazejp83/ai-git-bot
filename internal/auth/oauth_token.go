@@ -7,10 +7,54 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
 )
+
+// ExchangeForAPIKey converts an OAuth id_token into an OpenAI API key
+// via the token exchange endpoint. This is how Codex CLI gets API access
+// from ChatGPT OAuth tokens.
+func ExchangeForAPIKey(ctx context.Context, cfg OAuthConfig, idToken string) (string, error) {
+	data := url.Values{
+		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+		"client_id":          {cfg.ClientID},
+		"requested_token":    {"openai-api-key"},
+		"subject_token":      {idToken},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:id_token"},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", cfg.Issuer+"/oauth/token", strings.NewReader(data.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("api key exchange request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("api key exchange failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("parse api key exchange response: %w", err)
+	}
+
+	slog.Info("Token exchange: obtained API key",
+		"key_prefix", result.AccessToken[:min(10, len(result.AccessToken))]+"...",
+	)
+
+	return result.AccessToken, nil
+}
 
 // IDTokenClaims holds the relevant claims parsed from OpenAI's id_token JWT.
 type IDTokenClaims struct {
