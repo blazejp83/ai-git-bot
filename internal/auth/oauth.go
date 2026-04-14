@@ -19,7 +19,7 @@ const (
 	DefaultClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 	DefaultPort     = 1455
 	CallbackPath    = "/auth/callback"
-	DefaultScopes   = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+	DefaultScopes   = "openid profile email offline_access api.connectors.read api.connectors.invoke api.responses.write"
 )
 
 // OAuthTokens holds the tokens returned from OpenAI's OAuth flow.

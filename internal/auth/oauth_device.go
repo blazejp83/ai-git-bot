@@ -40,6 +40,7 @@ type DeviceCodeTokenResponse struct {
 func RequestDeviceCode(ctx context.Context, cfg OAuthConfig) (*DeviceCodeResponse, error) {
 	payload, _ := json.Marshal(map[string]string{
 		"client_id": cfg.ClientID,
+		"scope":     cfg.Scopes,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, "POST",
