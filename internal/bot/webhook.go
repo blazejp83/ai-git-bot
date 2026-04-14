@@ -45,16 +45,16 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var botName, botUsername, providerType string
 	var aiIntegrationID, gitIntegrationID int64
 	var agentEnabled bool
-	var botPrompt sql.NullString
+	var botPrompt, shellAllowlist sql.NullString
 	var maxTurnsReview, maxTurnsImpl sql.NullInt64
 
 	err := h.db.QueryRow(`
 		SELECT b.id, b.name, b.username, gi.provider_type, b.ai_integration_id, b.git_integration_id,
-		       b.agent_enabled, b.prompt, b.max_turns_review, b.max_turns_implementation
+		       b.agent_enabled, b.prompt, b.max_turns_review, b.max_turns_implementation, b.shell_allowlist
 		FROM bots b
 		JOIN git_integrations gi ON b.git_integration_id = gi.id
 		WHERE b.webhook_secret = ? AND b.enabled = 1
-	`, secret).Scan(&botID, &botName, &botUsername, &providerType, &aiIntegrationID, &gitIntegrationID, &agentEnabled, &botPrompt, &maxTurnsReview, &maxTurnsImpl)
+	`, secret).Scan(&botID, &botName, &botUsername, &providerType, &aiIntegrationID, &gitIntegrationID, &agentEnabled, &botPrompt, &maxTurnsReview, &maxTurnsImpl, &shellAllowlist)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ignored"})
@@ -116,6 +116,9 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if maxTurnsImpl.Valid {
 		bs.maxTurnsImpl = int(maxTurnsImpl.Int64)
 	}
+	if shellAllowlist.Valid && shellAllowlist.String != "" {
+		bs.shellAllowlist = parseAllowlist(shellAllowlist.String)
+	}
 
 	go h.dispatch(bs, event)
 
@@ -130,9 +133,17 @@ type botSettings struct {
 	aiIntID         int64
 	gitIntID        int64
 	agentEnabled    bool
-	systemPrompt    string // resolved prompt text (not a file name)
-	maxTurnsReview  int    // 0 = use global default
-	maxTurnsImpl    int    // 0 = use global default
+	systemPrompt    string   // resolved prompt text (not a file name)
+	maxTurnsReview  int      // 0 = use global default
+	maxTurnsImpl    int      // 0 = use global default
+	shellAllowlist  []string // nil = use global default
+}
+
+func (bs botSettings) resolveShellAllowlist() []string {
+	if len(bs.shellAllowlist) > 0 {
+		return bs.shellAllowlist
+	}
+	return defaultShellAllowlist()
 }
 
 func (bs botSettings) reviewTurns(globalDefault int) int {
@@ -177,11 +188,12 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 
 	owner := event.Repo.Owner
 	repoName := event.Repo.Name
+	allowlist := bs.resolveShellAllowlist()
 
 	switch event.Action {
 	case "opened", "synchronized":
 		if event.PullRequest != nil {
-			h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20))
+			h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20), allowlist)
 		}
 
 	case "created":
@@ -202,15 +214,12 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 
 				switch trigger {
 				case "review", "fullreview":
-					// Full agentic review — clone repo, explore with tools
 					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
-					h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20))
+					h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20), allowlist)
 				case "investigate", "explore", "deep":
-					// Agentic investigation of a specific question
 					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
-					h.runAgenticFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, body, promptText, bs.reviewTurns(20), commenter, prAuthor)
+					h.runAgenticFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, body, promptText, bs.reviewTurns(20), allowlist, commenter, prAuthor)
 				default:
-					// Quick chat response
 					h.runReviewFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, body, promptText, commenter, prAuthor)
 				}
 			}
@@ -223,7 +232,7 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 
 	case "assigned":
 		if event.Issue != nil && bs.agentEnabled {
-			h.runImplementation(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.implTurns(50))
+			h.runImplementation(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.implTurns(50), allowlist)
 		}
 
 	case "closed":
@@ -234,7 +243,7 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 	}
 }
 
-func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int) {
+func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int, shellAllowlist []string) {
 	pr := event.PullRequest
 
 	// Fetch diff for the initial prompt
@@ -289,7 +298,7 @@ When you're done, call the "done" tool with your review as markdown.`, pr.Title,
 		MaxTurns:       maxTurns,
 		SystemPrompt:   promptText,
 		MaxTokens:      h.cfg.AgentMaxTokens,
-		ShellAllowlist: defaultShellAllowlist(),
+		ShellAllowlist: shellAllowlist,
 		ShellTimeout:   60,
 	})
 
@@ -354,7 +363,7 @@ func (h *WebhookHandler) runReviewFollowup(ctx context.Context, aiClient ai.Clie
 	repoClient.PostComment(ctx, owner, repoName, prNum, comment)
 }
 
-func (h *WebhookHandler) runImplementation(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int) {
+func (h *WebhookHandler) runImplementation(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int, shellAllowlist []string) {
 	issue := event.Issue
 
 	slog.Info("Starting implementation", "issue", issue.Number, "title", issue.Title)
@@ -403,7 +412,7 @@ When you're done, call the "done" tool with a summary of your changes.`, issue.T
 		MaxTurns:       maxTurns,
 		SystemPrompt:   promptText,
 		MaxTokens:      h.cfg.AgentMaxTokens,
-		ShellAllowlist: defaultShellAllowlist(),
+		ShellAllowlist: shellAllowlist,
 		ShellTimeout:   300,
 	})
 
@@ -473,7 +482,7 @@ When you're done, call the "done" tool with a summary of your changes.`, issue.T
 }
 
 // runAgenticFollowup runs a full agentic session to investigate a specific question on a PR.
-func (h *WebhookHandler) runAgenticFollowup(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, commentBody, promptText string, maxTurns int, commenter, prAuthor string) {
+func (h *WebhookHandler) runAgenticFollowup(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, commentBody, promptText string, maxTurns int, shellAllowlist []string, commenter, prAuthor string) {
 	diff, _ := repoClient.GetPRDiff(ctx, owner, repoName, prNum)
 
 	baseBranch := "main"
@@ -526,7 +535,7 @@ When you have a thorough answer, call the "done" tool with your response.`
 		MaxTurns:       maxTurns,
 		SystemPrompt:   promptText,
 		MaxTokens:      h.cfg.AgentMaxTokens,
-		ShellAllowlist: defaultShellAllowlist(),
+		ShellAllowlist: shellAllowlist,
 		ShellTimeout:   60,
 	})
 
@@ -630,6 +639,17 @@ func buildCloneURL(db *sql.DB, owner, repoName string, factory *repo.ClientFacto
 	// Build a simple HTTPS clone URL — in practice this would use credentials
 	// For now return a basic URL; the workspace clone handles auth via git credential helpers
 	return fmt.Sprintf("https://github.com/%s/%s.git", owner, repoName)
+}
+
+func parseAllowlist(s string) []string {
+	var result []string
+	for _, item := range strings.Split(s, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func defaultShellAllowlist() []string {

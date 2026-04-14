@@ -81,6 +81,20 @@
                                     <div class="form-text">How many AI turns for issue implementation. Leave empty for default (50).</div>
                                 </div>
                             </div>
+
+                            <!-- Shell Allowlist -->
+                            <h6 class="mb-2 mt-3">Shell Allowlist <small class="text-muted">(commands the agent can run)</small></h6>
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="customShellAllowlist"
+                                       name="customShellAllowlist" value="true"{{if .Bot.ShellAllowlist}} checked{{end}}
+                                       onchange="toggleShellAllowlist()"/>
+                                <label class="form-check-label" for="customShellAllowlist">Custom shell allowlist</label>
+                            </div>
+                            <div id="shellAllowlistGroup" style="{{if not .Bot.ShellAllowlist}}display:none;{{end}}">
+                                <textarea class="form-control font-monospace" id="shellAllowlist" name="shellAllowlist"
+                                          rows="3" placeholder="git, grep, find, cat, mvn, go, npm, cargo, ...">{{if .Bot.ShellAllowlist}}{{.Bot.ShellAllowlist}}{{else}}git, grep, find, cat, head, tail, wc, sort, uniq, diff, ls, tree, mvn, gradle, go, npm, npx, yarn, pnpm, cargo, rustc, make, cmake, python3, pip, pytest, gcc, g++, ruby, bundle, rake, tsc, dotnet{{end}}</textarea>
+                                <div class="form-text">Comma-separated list of commands the agent is allowed to run. Only the base command is checked (e.g. <code>git</code> allows <code>git log</code>, <code>git diff</code>, etc.)</div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -92,4 +106,14 @@
         </form>
     </div>
 </div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+function toggleShellAllowlist() {
+    var cb = document.getElementById('customShellAllowlist');
+    var group = document.getElementById('shellAllowlistGroup');
+    group.style.display = cb.checked ? 'block' : 'none';
+}
+</script>
 {{end}}
