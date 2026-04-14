@@ -50,6 +50,15 @@ type ChatResponse struct {
 	Content    []ContentBlock
 	StopReason string // "end_turn", "tool_use", "max_tokens", "stop"
 	Usage      *TokenUsage
+	RateLimit  *RateLimitSnapshot // populated from response headers when available
+}
+
+// RateLimitSnapshot captures the current usage level from response headers.
+// Parsed from x-codex-primary-used-percent and similar headers on every response.
+type RateLimitSnapshot struct {
+	UsedPercent float64   // 0-100, how much of the rate limit window is consumed
+	ResetsAt    time.Time // when the current window resets
+	LimitName   string    // human-readable name of the limit
 }
 
 // Text returns concatenated text from all text blocks.

@@ -147,23 +147,25 @@ func (c *OpenAIClient) ChatWithTools(ctx context.Context, messages []Conversatio
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	respBody, status, err := c.doHTTP(ctx, body)
+	hr, err := c.doHTTPFull(ctx, body)
 	if err != nil {
 		return nil, err
 	}
-	if status == http.StatusTooManyRequests {
-		return nil, parse429Response(status, respBody)
+	if hr.status == http.StatusTooManyRequests {
+		return nil, parse429Response(hr.status, hr.body)
 	}
-	if status != http.StatusOK {
-		return nil, fmt.Errorf("openai API error (HTTP %d): %s", status, string(respBody))
+	if hr.status != http.StatusOK {
+		return nil, fmt.Errorf("openai API error (HTTP %d): %s", hr.status, string(hr.body))
 	}
 
 	var resp oaiResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
+	if err := json.Unmarshal(hr.body, &resp); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
-	result := &ChatResponse{}
+	result := &ChatResponse{
+		RateLimit: parseRateLimitHeaders(hr.headers),
+	}
 	if resp.Usage != nil {
 		result.Usage = &TokenUsage{
 			PromptTokens:     resp.Usage.PromptTokens,
@@ -246,10 +248,16 @@ func convToOAI(m ConversationMessage) []oaiMsg {
 	}
 }
 
-func (c *OpenAIClient) doHTTP(ctx context.Context, body []byte) ([]byte, int, error) {
+type httpResult struct {
+	body    []byte
+	status  int
+	headers http.Header
+}
+
+func (c *OpenAIClient) doHTTPFull(ctx context.Context, body []byte) (*httpResult, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.accessToken != "" {
@@ -263,11 +271,53 @@ func (c *OpenAIClient) doHTTP(ctx context.Context, body []byte) ([]byte, int, er
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("openai request: %w", err)
+		return nil, fmt.Errorf("openai request: %w", err)
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
-	return respBody, resp.StatusCode, nil
+	return &httpResult{body: respBody, status: resp.StatusCode, headers: resp.Header}, nil
+}
+
+// Backward-compat wrapper
+func (c *OpenAIClient) doHTTP(ctx context.Context, body []byte) ([]byte, int, error) {
+	r, err := c.doHTTPFull(ctx, body)
+	if err != nil {
+		return nil, 0, err
+	}
+	return r.body, r.status, nil
+}
+
+// parseRateLimitHeaders extracts usage percentage from response headers.
+func parseRateLimitHeaders(headers http.Header) *RateLimitSnapshot {
+	usedStr := headers.Get("x-codex-primary-used-percent")
+	if usedStr == "" {
+		// Try without prefix
+		usedStr = headers.Get("x-ratelimit-used-percent")
+	}
+	if usedStr == "" {
+		return nil
+	}
+
+	var used float64
+	fmt.Sscanf(usedStr, "%f", &used)
+	if used == 0 {
+		return nil
+	}
+
+	snap := &RateLimitSnapshot{
+		UsedPercent: used,
+		LimitName:   headers.Get("x-codex-limit-name"),
+	}
+
+	if resetStr := headers.Get("x-codex-primary-reset-at"); resetStr != "" {
+		var resetUnix int64
+		fmt.Sscanf(resetStr, "%d", &resetUnix)
+		if resetUnix > 0 {
+			snap.ResetsAt = time.Unix(resetUnix, 0)
+		}
+	}
+
+	return snap
 }
 
 func (c *OpenAIClient) doSimpleRequest(ctx context.Context, model string, maxTokens int, messages []oaiMsg, logContext string) (string, error) {

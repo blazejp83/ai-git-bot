@@ -18,6 +18,7 @@ type ProgressReporter interface {
 	OnToolResult(ctx context.Context, toolName string, output string, err error)
 	OnRateLimit(ctx context.Context, retryAfter time.Duration)
 	OnUsageLimit(ctx context.Context, err *ai.UsageLimitError)
+	OnBudgetWarning(ctx context.Context, usedPercent float64, resetsAt time.Time, severity string)
 	OnComplete(ctx context.Context, result RunResult)
 }
 
@@ -115,6 +116,27 @@ func (r *CommentReporter) OnUsageLimit(ctx context.Context, err *ai.UsageLimitEr
 	r.RepoClient.PostComment(ctx, r.Owner, r.Repo, r.Number, msg)
 }
 
+func (r *CommentReporter) OnBudgetWarning(ctx context.Context, usedPercent float64, resetsAt time.Time, severity string) {
+	slog.Warn("Budget warning", "used_percent", usedPercent, "severity", severity)
+
+	var msg string
+	remaining := 100 - usedPercent
+	switch severity {
+	case "critical":
+		msg = fmt.Sprintf("**Agent**: Less than %.0f%% of API budget remaining. Wrapping up current task immediately.", remaining)
+	case "high":
+		msg = fmt.Sprintf("**Agent**: Less than %.0f%% of API budget remaining. Will complete current work and finish soon.", remaining)
+	case "moderate":
+		msg = fmt.Sprintf("**Agent**: Heads up — %.0f%% of API budget used.", usedPercent)
+	}
+
+	if !resetsAt.IsZero() {
+		msg += fmt.Sprintf(" Budget resets %s.", resetsAt.Format("Jan 2 at 3:04 PM MST"))
+	}
+
+	r.RepoClient.PostComment(ctx, r.Owner, r.Repo, r.Number, msg)
+}
+
 func (r *CommentReporter) OnComplete(ctx context.Context, result RunResult) {
 	slog.Info("Runner complete", "status", result.Status, "turns", result.TurnCount)
 }
@@ -136,6 +158,9 @@ func (r *LogReporter) OnRateLimit(ctx context.Context, retryAfter time.Duration)
 }
 func (r *LogReporter) OnUsageLimit(ctx context.Context, err *ai.UsageLimitError) {
 	slog.Error("Usage limit reached", "type", err.ErrorType, "resets_at", err.ResetsAt)
+}
+func (r *LogReporter) OnBudgetWarning(ctx context.Context, usedPercent float64, resetsAt time.Time, severity string) {
+	slog.Warn("Budget warning", "used_percent", usedPercent, "severity", severity)
 }
 func (r *LogReporter) OnComplete(ctx context.Context, result RunResult) {
 	slog.Info("Complete", "status", result.Status)

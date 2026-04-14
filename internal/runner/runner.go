@@ -84,14 +84,43 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 
 	toolDefs := r.tools.GetToolDefs()
 
+	warnedAt75 := false
+	warnedAt90 := false
+	budgetUrgent := false
+
 	for turn := 0; turn < r.config.MaxTurns; turn++ {
 		slog.Info("Runner turn", "turn", turn+1, "max", r.config.MaxTurns, "messages", len(messages))
+
+		// If budget is urgent, inject a wrap-up instruction
+		if budgetUrgent {
+			messages = append(messages, ai.ConversationMessage{
+				Role:    "user",
+				Content: "[SYSTEM] You are about to run out of API budget. Complete your current task immediately and call the done tool with your result. Do not start new explorations.",
+			})
+			r.session.SaveMessage("user", "text", "[SYSTEM] Budget urgent — wrapping up", "", "", "")
+		}
 
 		// Call AI with backoff
 		response, err := r.callWithBackoff(ctx, messages, toolDefs)
 		if err != nil {
 			slog.Error("AI call failed", "turn", turn+1, "err", err)
 			return RunResult{Status: StatusError, TurnCount: turn + 1}, err
+		}
+
+		// Check usage level from response headers
+		if snap := response.RateLimit; snap != nil {
+			slog.Info("Usage level", "used_percent", snap.UsedPercent, "limit", snap.LimitName)
+
+			if snap.UsedPercent >= 95 && !budgetUrgent {
+				budgetUrgent = true
+				r.reporter.OnBudgetWarning(ctx, snap.UsedPercent, snap.ResetsAt, "critical")
+			} else if snap.UsedPercent >= 90 && !warnedAt90 {
+				warnedAt90 = true
+				r.reporter.OnBudgetWarning(ctx, snap.UsedPercent, snap.ResetsAt, "high")
+			} else if snap.UsedPercent >= 75 && !warnedAt75 {
+				warnedAt75 = true
+				r.reporter.OnBudgetWarning(ctx, snap.UsedPercent, snap.ResetsAt, "moderate")
+			}
 		}
 
 		// Persist and report assistant text
