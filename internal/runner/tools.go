@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -113,6 +114,10 @@ func NewToolRegistry(mode Mode, shellAllowlist []string, shellTimeout time.Durat
 			parts := strings.Fields(command)
 			if len(parts) > 0 && len(r.shellAllowlist) > 0 {
 				if !r.shellAllowlist[parts[0]] {
+					slog.Warn("BLOCKED shell command — not in allowlist",
+						"command", parts[0],
+						"full_command", command,
+					)
 					return "", fmt.Errorf("command %q not allowed. Allowed: %s",
 						parts[0], strings.Join(shellAllowlistKeys(r.shellAllowlist), ", "))
 				}
