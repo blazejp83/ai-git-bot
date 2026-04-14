@@ -25,9 +25,10 @@ FROM alpine:3.21 AS minimal
 RUN apk add --no-cache ca-certificates git && \
     addgroup -g 1000 app && adduser -u 1000 -G app -D app
 COPY --from=build /server /server
-COPY migrations/ /migrations/
-COPY prompts/ /prompts/
-COPY web/ /web/
+WORKDIR /app
+COPY migrations/ /app/migrations/
+COPY prompts/ /app/prompts/
+COPY web/ /app/web/
 USER app
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s CMD wget -q -O- http://localhost:8080/healthz || exit 1
@@ -80,11 +81,11 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk
 ENV GOPATH=/home/app/go
 ENV PATH="/home/app/.cargo/bin:/home/app/go/bin:/usr/lib/go/bin:/usr/lib/jvm/java-21-openjdk/bin:${PATH}"
 
-# Copy application
+# Copy application into /app (WORKDIR)
 COPY --from=build /server /server
-COPY migrations/ /migrations/
-COPY prompts/ /prompts/
-COPY web/ /web/
+COPY migrations/ /app/migrations/
+COPY prompts/ /app/prompts/
+COPY web/ /app/web/
 
 # Ensure app user can write to data directory
 RUN mkdir -p /data && chown app:app /data

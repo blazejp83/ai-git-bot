@@ -187,7 +187,7 @@ func (h *AiHandlers) Save(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Insert new
 		encKey, _ := h.enc.Encrypt(apiKey)
-		_, err := h.db.Exec(`
+		result, err := h.db.Exec(`
 			INSERT INTO ai_integrations (name, provider_type, api_url, api_key, api_version,
 			       model, max_tokens, max_diff_chars_per_chunk, max_diff_chunks,
 			       retry_truncated_chunk_chars, extended_thinking, thinking_budget, created_at, updated_at)
@@ -196,6 +196,15 @@ func (h *AiHandlers) Save(w http.ResponseWriter, r *http.Request) {
 			maxDiffChars, maxDiffChunks, retryChars, extThinking, thinkBudget, now, now)
 		if err != nil {
 			slog.Error("Failed to insert AI integration", "err", err)
+		}
+
+		// For new OpenAI integrations without an API key, redirect to edit page
+		// so the user can immediately use OAuth login
+		if providerType == "openai" && apiKey == "" {
+			if newID, err := result.LastInsertId(); err == nil {
+				http.Redirect(w, r, fmt.Sprintf("/ai-integrations/%d/edit", newID), http.StatusSeeOther)
+				return
+			}
 		}
 	}
 

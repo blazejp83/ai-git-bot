@@ -65,19 +65,29 @@
                     <div class="form-text" id="apiUrlHint"></div>
                 </div>
                 <div class="col-md-6">
-                    <label for="apiKey" class="form-label">API Key</label>
-                    <div class="input-group">
-                        <input type="password" class="form-control" id="apiKey" name="apiKey"
-                               placeholder="{{if .IsEdit}}Leave blank to keep current{{else}}Enter API key{{end}}"/>
-                        {{if and .IsEdit (eq .Integration.ProviderType "openai") (ne .Integration.AuthMethod "oauth")}}
-                        <a href="/ai-integrations/{{.Integration.ID}}/oauth" class="btn btn-outline-success"
-                           title="Login with your OpenAI account instead of using an API key">
-                            <i class="bi bi-shield-check"></i> Login with OpenAI
-                        </a>
-                        {{end}}
-                    </div>
+                    <label for="apiKey" class="form-label">Authentication</label>
+                    {{if and .IsEdit (eq .Integration.AuthMethod "oauth")}}
+                    <!-- Already authenticated via OAuth — shown in the status card above -->
+                    <div class="form-text text-success"><i class="bi bi-shield-check"></i> Authenticated via OpenAI OAuth</div>
+                    {{else}}
+                    <input type="password" class="form-control" id="apiKey" name="apiKey"
+                           placeholder="{{if .IsEdit}}Leave blank to keep current{{else}}Enter API key{{end}}"/>
                     {{if .IsEdit}}
                     <div class="form-text">Leave blank to keep current API key.</div>
+                    {{end}}
+                    {{if and .IsEdit (eq .Integration.ProviderType "openai")}}
+                    <div class="mt-2">
+                        <a href="/ai-integrations/{{.Integration.ID}}/oauth" class="btn btn-sm btn-outline-success">
+                            <i class="bi bi-shield-check"></i> Or login with OpenAI account
+                        </a>
+                        <div class="form-text">Use your ChatGPT subscription instead of an API key.</div>
+                    </div>
+                    {{end}}
+                    {{if not .IsEdit}}
+                    <div class="form-text" id="oauthHint" style="display:none;">
+                        <i class="bi bi-info-circle"></i> Save this integration first, then you can connect your OpenAI account via OAuth instead of using an API key.
+                    </div>
+                    {{end}}
                     {{end}}
                 </div>
 
@@ -164,4 +174,20 @@
         </form>
     </div>
 </div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var providerSelect = document.getElementById('providerType');
+    var oauthHint = document.getElementById('oauthHint');
+    if (providerSelect && oauthHint) {
+        function toggleHint() {
+            oauthHint.style.display = providerSelect.value === 'openai' ? 'block' : 'none';
+        }
+        providerSelect.addEventListener('change', toggleHint);
+        toggleHint();
+    }
+});
+</script>
 {{end}}
