@@ -86,9 +86,10 @@ COPY migrations/ /migrations/
 COPY prompts/ /prompts/
 COPY web/ /web/
 
-# Ensure app user can write to working directories
+# Ensure app user can write to data directory
 RUN mkdir -p /data && chown app:app /data
 
+WORKDIR /app
 USER app
 EXPOSE 8080
 

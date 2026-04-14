@@ -4,7 +4,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      DATABASE_URL: "sqlite://data/aigitbot.db"
+      DATABASE_URL: "sqlite:///data/aigitbot.db"
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
     volumes:
