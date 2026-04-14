@@ -1,0 +1,95 @@
+{{define "title"}}{{if .IsEdit}}Edit{{else}}New{{end}} Bot - AI Git Bot{{end}}
+
+{{define "content"}}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-cpu"></i> {{if .IsEdit}}Edit Bot{{else}}New Bot{{end}}</h2>
+</div>
+
+{{if and .IsEdit .Bot.WebhookPath}}
+<div class="alert alert-info">
+    <i class="bi bi-link-45deg"></i> <strong>Webhook URL:</strong> <code>{{.Bot.WebhookPath}}</code>
+</div>
+{{end}}
+
+<div class="card">
+    <div class="card-body">
+        <form action="/bots/save" method="post">
+            {{if .IsEdit}}<input type="hidden" name="id" value="{{.Bot.ID}}"/>
+            <input type="hidden" name="webhookSecret" value="{{.Bot.WebhookSecret}}"/>{{end}}
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label for="name" class="form-label">Name</label>
+                    <input type="text" class="form-control" id="name" name="name" value="{{.Bot.Name}}" placeholder="e.g. Code Review Bot" required/>
+                </div>
+                <div class="col-md-6">
+                    <label for="username" class="form-label">Username</label>
+                    <input type="text" class="form-control" id="username" name="username" value="{{.Bot.Username}}" placeholder="Bot username on Git platform" required/>
+                </div>
+                <div class="col-12">
+                    <label for="prompt" class="form-label">System Prompt</label>
+                    <textarea class="form-control" id="prompt" name="prompt" rows="6" placeholder="System prompt for the AI bot...">{{.Bot.Prompt}}</textarea>
+                </div>
+                <div class="col-md-6">
+                    <label for="aiIntegrationId" class="form-label">AI Integration</label>
+                    <select class="form-select" id="aiIntegrationId" name="aiIntegrationId" required>
+                        <option value="">Select...</option>
+                        {{range .AiIntegrations}}
+                        <option value="{{.ID}}"{{if eq .ID $.Bot.AiIntegrationID}} selected{{end}}>{{.Name}}</option>
+                        {{end}}
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label for="gitIntegrationId" class="form-label">Git Integration</label>
+                    <select class="form-select" id="gitIntegrationId" name="gitIntegrationId" required>
+                        <option value="">Select...</option>
+                        {{range .GitIntegrations}}
+                        <option value="{{.ID}}"{{if eq .ID $.Bot.GitIntegrationID}} selected{{end}}>{{.Name}}</option>
+                        {{end}}
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-check form-switch mt-3">
+                        <input class="form-check-input" type="checkbox" id="enabled" name="enabled" value="true"{{if .Bot.Enabled}} checked{{end}}/>
+                        <label class="form-check-label" for="enabled">Enabled</label>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-check form-switch mt-3">
+                        <input class="form-check-input" type="checkbox" id="agentEnabled" name="agentEnabled" value="true"{{if .Bot.AgentEnabled}} checked{{end}}/>
+                        <label class="form-check-label" for="agentEnabled">Agent Enabled</label>
+                    </div>
+                </div>
+
+                <!-- Turn Limit Overrides -->
+                <div class="col-12 mt-3">
+                    <div class="card bg-light">
+                        <div class="card-body py-2">
+                            <h6 class="mb-2">Turn Limits <small class="text-muted">(optional overrides)</small></h6>
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label for="maxTurnsReview" class="form-label">Max Turns — Review</label>
+                                    <input type="number" class="form-control" id="maxTurnsReview" name="maxTurnsReview"
+                                           value="{{if .Bot.MaxTurnsReview}}{{.Bot.MaxTurnsReview}}{{end}}" min="1" max="100"
+                                           placeholder="Default: 20"/>
+                                    <div class="form-text">How many AI turns for PR reviews. Leave empty for default (20).</div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="maxTurnsImplementation" class="form-label">Max Turns — Implementation</label>
+                                    <input type="number" class="form-control" id="maxTurnsImplementation" name="maxTurnsImplementation"
+                                           value="{{if .Bot.MaxTurnsImplementation}}{{.Bot.MaxTurnsImplementation}}{{end}}" min="1" max="200"
+                                           placeholder="Default: 50"/>
+                                    <div class="form-text">How many AI turns for issue implementation. Leave empty for default (50).</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-4">
+                <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+                <a href="/bots" class="btn btn-secondary ms-2"><i class="bi bi-x-lg"></i> Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{{end}}

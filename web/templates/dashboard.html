@@ -1,0 +1,170 @@
+{{define "title"}}Dashboard - AI Git Bot{{end}}
+
+{{define "content"}}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-speedometer2"></i> Dashboard</h2>
+</div>
+
+<!-- Summary Cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card text-white bg-primary">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title mb-0">Total Bots</h6>
+                        <h2 class="mt-2 mb-0">{{.TotalBots}}</h2>
+                    </div>
+                    <i class="bi bi-cpu fs-1 opacity-50"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-success">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title mb-0">Active Bots</h6>
+                        <h2 class="mt-2 mb-0">{{.ActiveBots}}</h2>
+                    </div>
+                    <i class="bi bi-check-circle fs-1 opacity-50"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-info">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title mb-0">Total Webhook Calls</h6>
+                        <h2 class="mt-2 mb-0">{{.TotalWebhookCalls}}</h2>
+                    </div>
+                    <i class="bi bi-arrow-left-right fs-1 opacity-50"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-warning">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title mb-0">Total AI Tokens</h6>
+                        <h2 class="mt-2 mb-0">{{add .TotalTokensSent .TotalTokensReceived}}</h2>
+                    </div>
+                    <i class="bi bi-lightning fs-1 opacity-50"></i>
+                </div>
+                <small class="opacity-75">
+                    Sent: {{.TotalTokensSent}} / Received: {{.TotalTokensReceived}}
+                </small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Links -->
+<div class="row g-3 mb-4">
+    <div class="col-auto">
+        <a href="/bots/new" class="btn btn-primary">
+            <i class="bi bi-plus-circle"></i> New Bot
+        </a>
+    </div>
+    <div class="col-auto">
+        <a href="/ai-integrations" class="btn btn-outline-secondary">
+            <i class="bi bi-stars"></i> AI Integrations
+        </a>
+    </div>
+    <div class="col-auto">
+        <a href="/git-integrations" class="btn btn-outline-secondary">
+            <i class="bi bi-git"></i> Git Integrations
+        </a>
+    </div>
+</div>
+
+<!-- Bots Table -->
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-cpu"></i> Bots</h5>
+    </div>
+    <div class="card-body">
+        {{if not .Bots}}
+        <div class="text-center py-4">
+            <i class="bi bi-inbox fs-1 text-muted"></i>
+            <p class="text-muted mt-2">No bots configured yet.</p>
+            <a href="/bots/new" class="btn btn-primary">
+                <i class="bi bi-plus-circle"></i> Create your first bot
+            </a>
+        </div>
+        {{else}}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Name</th>
+                        <th>Username</th>
+                        <th>AI Integration</th>
+                        <th>Git Integration</th>
+                        <th>Enabled</th>
+                        <th>Webhook Calls</th>
+                        <th>Last Webhook</th>
+                        <th>Last Error</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Bots}}
+                    <tr>
+                        <td>{{.Name}}</td>
+                        <td>{{.Username}}</td>
+                        <td>{{.AiIntegrationName}}</td>
+                        <td>{{.GitIntegrationName}}</td>
+                        <td>
+                            {{if .Enabled}}
+                            <span class="badge bg-success">Enabled</span>
+                            {{else}}
+                            <span class="badge bg-secondary">Disabled</span>
+                            {{end}}
+                        </td>
+                        <td>{{.WebhookCallCount}}</td>
+                        <td>
+                            {{if .LastWebhookAt}}
+                            {{.LastWebhookAt}}
+                            {{else}}
+                            <span class="text-muted">Never</span>
+                            {{end}}
+                        </td>
+                        <td>
+                            {{if .LastErrorMessage}}
+                            <span class="text-danger" style="cursor: pointer;"
+                                  data-bs-toggle="tooltip" title="{{.LastErrorMessage}}">
+                                <i class="bi bi-exclamation-circle"></i> {{.LastErrorAt}}
+                            </span>
+                            {{else}}
+                            <span class="text-muted">None</span>
+                            {{end}}
+                        </td>
+                        <td>
+                            <a href="/bots/{{.ID}}/edit" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-pencil"></i> Edit
+                            </a>
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+        {{end}}
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+        tooltipTriggerList.map(function (el) { return new bootstrap.Tooltip(el); });
+    });
+</script>
+{{end}}
