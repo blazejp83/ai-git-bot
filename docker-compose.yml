@@ -1,10 +1,10 @@
 services:
   ai-git-bot:
     image: registry.bpds1621.synology.me/ai-git-bot:2.0.0
+    user: "1000:1000"
     ports:
       - "8080:8080"
     environment:
-      DATABASE_URL: "sqlite:///data/aigitbot.db"
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
     volumes:

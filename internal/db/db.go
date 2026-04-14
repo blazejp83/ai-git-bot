@@ -12,13 +12,21 @@ import (
 )
 
 func Open(databaseURL string) (*sql.DB, error) {
-	if strings.HasPrefix(databaseURL, "sqlite://") {
-		path := strings.TrimPrefix(databaseURL, "sqlite://")
+	if strings.HasPrefix(databaseURL, "sqlite:") {
+		// Support sqlite:///path, sqlite://path, and sqlite:/path
+		path := databaseURL
+		path = strings.TrimPrefix(path, "sqlite:///")
+		if path == databaseURL {
+			path = strings.TrimPrefix(databaseURL, "sqlite://")
+		}
+		// If path doesn't start with /, it's relative
+		if !filepath.IsAbs(path) {
+			path = filepath.Clean(path)
+		}
+
 		dir := filepath.Dir(path)
 		if dir != "" && dir != "." {
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				return nil, fmt.Errorf("create db dir: %w", err)
-			}
+			os.MkdirAll(dir, 0755) // best effort — may fail if volume-mounted
 		}
 		db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_foreign_keys=on")
 		if err != nil {

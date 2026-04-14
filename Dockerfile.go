@@ -91,7 +91,11 @@ RUN mkdir -p /data && chown app:app /data
 
 WORKDIR /app
 USER app
+
+ENV DATABASE_URL="sqlite:///data/aigitbot.db"
+
 EXPOSE 8080
+VOLUME /data
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -q -O- http://localhost:8080/healthz || exit 1
