@@ -10,7 +10,7 @@
 # ---------------------------------------------------------------------------
 # Build stage — compile the Go binary
 # ---------------------------------------------------------------------------
-FROM golang:1.24-alpine AS build
+FROM golang:1.25-alpine AS build
 RUN apk add --no-cache gcc musl-dev
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -76,9 +76,9 @@ USER root
 RUN npm install -g typescript pnpm yarn 2>/dev/null || true
 
 # Environment
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk \
-    GOPATH=/home/app/go \
-    PATH="/home/app/.cargo/bin:/home/app/go/bin:/usr/lib/go/bin:${JAVA_HOME}/bin:${PATH}"
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk
+ENV GOPATH=/home/app/go
+ENV PATH="/home/app/.cargo/bin:/home/app/go/bin:/usr/lib/go/bin:/usr/lib/jvm/java-21-openjdk/bin:${PATH}"
 
 # Copy application
 COPY --from=build /server /server
