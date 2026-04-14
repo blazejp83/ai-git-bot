@@ -128,11 +128,12 @@ func (c *OpenAIClient) chatViaResponses(ctx context.Context, history []Message, 
 	input = append(input, map[string]any{"role": "user", "content": userMessage})
 
 	reqBody := map[string]any{
-		"model":        model,
-		"instructions": prompt,
-		"input":        input,
+		"model":             model,
+		"instructions":      prompt,
+		"input":             input,
 		"max_output_tokens": maxTokens,
-		"stream":       false,
+		"stream":            false,
+		"store":             false,
 	}
 
 	body, _ := json.Marshal(reqBody)
