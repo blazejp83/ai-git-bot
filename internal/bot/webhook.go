@@ -23,6 +23,7 @@ import (
 type WebhookHandler struct {
 	db            *sql.DB
 	cfg           *config.Config
+	enc           *encrypt.Service
 	aiFactory     *ai.ClientFactory
 	repoFactory   *repo.ClientFactory
 	promptService *prompt.Service
@@ -32,6 +33,7 @@ func NewWebhookHandler(db *sql.DB, enc *encrypt.Service, promptSvc *prompt.Servi
 	return &WebhookHandler{
 		db:            db,
 		cfg:           cfg,
+		enc:           enc,
 		aiFactory:     ai.NewClientFactory(enc),
 		repoFactory:   repo.NewClientFactory(enc),
 		promptService: promptSvc,
@@ -193,7 +195,7 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 	switch event.Action {
 	case "opened", "synchronized":
 		if event.PullRequest != nil {
-			h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20), allowlist)
+			h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID)
 		}
 
 	case "created":
@@ -215,10 +217,10 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 				switch trigger {
 				case "review", "fullreview":
 					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
-					h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20), allowlist)
+					h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID)
 				case "investigate", "explore", "deep":
 					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
-					h.runAgenticFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, body, promptText, bs.reviewTurns(20), allowlist, commenter, prAuthor)
+					h.runAgenticFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, body, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID, commenter, prAuthor)
 				default:
 					h.runReviewFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, body, promptText, commenter, prAuthor)
 				}
@@ -232,7 +234,7 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 
 	case "assigned":
 		if event.Issue != nil && bs.agentEnabled {
-			h.runImplementation(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.implTurns(50), allowlist)
+			h.runImplementation(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.implTurns(50), allowlist, bs.gitIntID)
 		}
 
 	case "closed":
@@ -243,7 +245,7 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 	}
 }
 
-func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int, shellAllowlist []string) {
+func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int, shellAllowlist []string, gitIntID int64) {
 	pr := event.PullRequest
 
 	// Fetch diff for the initial prompt
@@ -260,7 +262,7 @@ func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repo
 	}
 
 	// Build clone URL from credentials
-	cloneURL := buildCloneURL(h.db, event.Repo.Owner, event.Repo.Name, h.repoFactory)
+	cloneURL := h.cloneURL(gitIntID, event.Repo.Owner, event.Repo.Name)
 
 	ws, err := runner.NewWorkspace(ctx, cloneURL, owner, repoName, baseBranch)
 	if err != nil {
@@ -363,7 +365,7 @@ func (h *WebhookHandler) runReviewFollowup(ctx context.Context, aiClient ai.Clie
 	repoClient.PostComment(ctx, owner, repoName, prNum, comment)
 }
 
-func (h *WebhookHandler) runImplementation(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int, shellAllowlist []string) {
+func (h *WebhookHandler) runImplementation(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int, shellAllowlist []string, gitIntID int64) {
 	issue := event.Issue
 
 	slog.Info("Starting implementation", "issue", issue.Number, "title", issue.Title)
@@ -376,7 +378,7 @@ func (h *WebhookHandler) runImplementation(ctx context.Context, aiClient ai.Clie
 		baseBranch = "main"
 	}
 
-	cloneURL := buildCloneURL(h.db, owner, repoName, h.repoFactory)
+	cloneURL := h.cloneURL(gitIntID, owner, repoName)
 
 	ws, err := runner.NewWorkspace(ctx, cloneURL, owner, repoName, baseBranch)
 	if err != nil {
@@ -482,7 +484,7 @@ When you're done, call the "done" tool with a summary of your changes.`, issue.T
 }
 
 // runAgenticFollowup runs a full agentic session to investigate a specific question on a PR.
-func (h *WebhookHandler) runAgenticFollowup(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, commentBody, promptText string, maxTurns int, shellAllowlist []string, commenter, prAuthor string) {
+func (h *WebhookHandler) runAgenticFollowup(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, commentBody, promptText string, maxTurns int, shellAllowlist []string, gitIntID int64, commenter, prAuthor string) {
 	diff, _ := repoClient.GetPRDiff(ctx, owner, repoName, prNum)
 
 	baseBranch := "main"
@@ -494,7 +496,7 @@ func (h *WebhookHandler) runAgenticFollowup(ctx context.Context, aiClient ai.Cli
 		baseBranch = b
 	}
 
-	cloneURL := buildCloneURL(h.db, owner, repoName, h.repoFactory)
+	cloneURL := h.cloneURL(gitIntID, owner, repoName)
 	ws, err := runner.NewWorkspace(ctx, cloneURL, owner, repoName, baseBranch)
 	if err != nil {
 		slog.Error("Failed to create workspace for agentic follow-up", "err", err)
@@ -635,10 +637,39 @@ func toSimpleMessages(msgs []ai.ConversationMessage) []ai.Message {
 	return result
 }
 
-func buildCloneURL(db *sql.DB, owner, repoName string, factory *repo.ClientFactory) string {
-	// Build a simple HTTPS clone URL — in practice this would use credentials
-	// For now return a basic URL; the workspace clone handles auth via git credential helpers
-	return fmt.Sprintf("https://github.com/%s/%s.git", owner, repoName)
+func (h *WebhookHandler) cloneURL(gitIntID int64, owner, repoName string) string {
+	db := h.db
+	enc := h.enc
+	var providerType, baseURL, token string
+	var username sql.NullString
+	err := db.QueryRow("SELECT provider_type, url, token, username FROM git_integrations WHERE id = ?", gitIntID).
+		Scan(&providerType, &baseURL, &token, &username)
+	if err != nil {
+		slog.Error("Failed to load git integration for clone URL", "err", err)
+		return fmt.Sprintf("https://github.com/%s/%s.git", owner, repoName)
+	}
+
+	decrypted, _ := enc.Decrypt(token)
+
+	// Strip protocol
+	protocol := "https"
+	if strings.HasPrefix(baseURL, "http://") {
+		protocol = "http"
+	}
+	host := strings.TrimPrefix(strings.TrimPrefix(baseURL, "https://"), "http://")
+	host = strings.TrimSuffix(host, "/")
+	// Remove /api/v1, /api/v4, /2.0 suffixes
+	for _, suffix := range []string{"/api/v1", "/api/v4", "/api/v3", "/2.0"} {
+		host = strings.TrimSuffix(host, suffix)
+	}
+
+	// Build authenticated clone URL
+	if username.Valid && username.String != "" {
+		// Bitbucket style: username:token@host
+		return fmt.Sprintf("%s://%s:%s@%s/%s/%s.git", protocol, username.String, decrypted, host, owner, repoName)
+	}
+	// oauth2:token@host works for Gitea, GitHub, GitLab
+	return fmt.Sprintf("%s://oauth2:%s@%s/%s/%s.git", protocol, decrypted, host, owner, repoName)
 }
 
 func parseAllowlist(s string) []string {
