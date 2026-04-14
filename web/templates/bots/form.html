@@ -59,6 +59,31 @@
                         <label class="form-check-label" for="agentEnabled">Agent Enabled</label>
                     </div>
                 </div>
+
+                <!-- Turn Limit Overrides -->
+                <div class="col-12 mt-3">
+                    <div class="card bg-light">
+                        <div class="card-body py-2">
+                            <h6 class="mb-2">Turn Limits <small class="text-muted">(optional overrides)</small></h6>
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label for="maxTurnsReview" class="form-label">Max Turns — Review</label>
+                                    <input type="number" class="form-control" id="maxTurnsReview" name="maxTurnsReview"
+                                           value="{{if .Bot.MaxTurnsReview}}{{.Bot.MaxTurnsReview}}{{end}}" min="1" max="100"
+                                           placeholder="Default: 20"/>
+                                    <div class="form-text">How many AI turns for PR reviews. Leave empty for default (20).</div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="maxTurnsImplementation" class="form-label">Max Turns — Implementation</label>
+                                    <input type="number" class="form-control" id="maxTurnsImplementation" name="maxTurnsImplementation"
+                                           value="{{if .Bot.MaxTurnsImplementation}}{{.Bot.MaxTurnsImplementation}}{{end}}" min="1" max="200"
+                                           placeholder="Default: 50"/>
+                                    <div class="form-text">How many AI turns for issue implementation. Leave empty for default (50).</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="mt-4">
                 <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>

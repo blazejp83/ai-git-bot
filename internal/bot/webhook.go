@@ -46,14 +46,15 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var aiIntegrationID, gitIntegrationID int64
 	var agentEnabled bool
 	var botPrompt sql.NullString
+	var maxTurnsReview, maxTurnsImpl sql.NullInt64
 
 	err := h.db.QueryRow(`
 		SELECT b.id, b.name, b.username, gi.provider_type, b.ai_integration_id, b.git_integration_id,
-		       b.agent_enabled, b.prompt
+		       b.agent_enabled, b.prompt, b.max_turns_review, b.max_turns_implementation
 		FROM bots b
 		JOIN git_integrations gi ON b.git_integration_id = gi.id
 		WHERE b.webhook_secret = ? AND b.enabled = 1
-	`, secret).Scan(&botID, &botName, &botUsername, &providerType, &aiIntegrationID, &gitIntegrationID, &agentEnabled, &botPrompt)
+	`, secret).Scan(&botID, &botName, &botUsername, &providerType, &aiIntegrationID, &gitIntegrationID, &agentEnabled, &botPrompt, &maxTurnsReview, &maxTurnsImpl)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ignored"})
@@ -96,41 +97,82 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	promptName := ""
-	if botPrompt.Valid {
-		promptName = botPrompt.String
+	bs := botSettings{
+		id: botID, name: botName, username: botUsername,
+		aiIntID: aiIntegrationID, gitIntID: gitIntegrationID,
+		agentEnabled: agentEnabled,
+	}
+	// Resolve system prompt: if bot has custom prompt text, use it directly.
+	// Otherwise fall back to loading from prompts/ directory.
+	if botPrompt.Valid && botPrompt.String != "" {
+		bs.systemPrompt = botPrompt.String
+	} else {
+		bs.systemPrompt = h.promptService.GetSystemPrompt("")
+	}
+	// Per-bot turn limit overrides (0 = use global defaults)
+	if maxTurnsReview.Valid {
+		bs.maxTurnsReview = int(maxTurnsReview.Int64)
+	}
+	if maxTurnsImpl.Valid {
+		bs.maxTurnsImpl = int(maxTurnsImpl.Int64)
 	}
 
-	go h.dispatch(botID, botName, botUsername, aiIntegrationID, gitIntegrationID, agentEnabled, promptName, event)
+	go h.dispatch(bs, event)
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-func (h *WebhookHandler) dispatch(botID int64, botName, botUsername string, aiIntID, gitIntID int64, agentEnabled bool, promptName string, event *webhook.Event) {
+type botSettings struct {
+	id              int64
+	name            string
+	username        string
+	aiIntID         int64
+	gitIntID        int64
+	agentEnabled    bool
+	systemPrompt    string // resolved prompt text (not a file name)
+	maxTurnsReview  int    // 0 = use global default
+	maxTurnsImpl    int    // 0 = use global default
+}
+
+func (bs botSettings) reviewTurns(globalDefault int) int {
+	if bs.maxTurnsReview > 0 {
+		return bs.maxTurnsReview
+	}
+	return globalDefault
+}
+
+func (bs botSettings) implTurns(globalDefault int) int {
+	if bs.maxTurnsImpl > 0 {
+		return bs.maxTurnsImpl
+	}
+	return globalDefault
+}
+
+func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 	ctx := context.Background()
 
 	slog.Info("Dispatching webhook event",
-		"bot", botName, "action", event.Action,
+		"bot", bs.name, "action", event.Action,
 		"repo", event.Repo.FullName, "sender", event.Sender.Login)
 
-	aiClient, err := h.aiFactory.GetClient(h.db, aiIntID)
+	aiClient, err := h.aiFactory.GetClient(h.db, bs.aiIntID)
 	if err != nil {
 		slog.Error("Failed to get AI client", "err", err)
-		h.recordError(botID, "Failed to get AI client: "+err.Error())
+		h.recordError(bs.id, "Failed to get AI client: "+err.Error())
 		return
 	}
 
-	repoClient, err := h.repoFactory.GetClient(h.db, gitIntID)
+	repoClient, err := h.repoFactory.GetClient(h.db, bs.gitIntID)
 	if err != nil {
 		slog.Error("Failed to get repo client", "err", err)
-		h.recordError(botID, "Failed to get repo client: "+err.Error())
+		h.recordError(bs.id, "Failed to get repo client: "+err.Error())
 		return
 	}
 
-	promptText := h.promptService.GetSystemPrompt(promptName)
+	promptText := bs.systemPrompt
 
-	botAlias := "@" + botUsername
+	botAlias := "@" + bs.username
 	hasBotMention := event.Comment != nil && strings.Contains(event.Comment.Body, botAlias)
 
 	owner := event.Repo.Owner
@@ -139,7 +181,7 @@ func (h *WebhookHandler) dispatch(botID int64, botName, botUsername string, aiIn
 	switch event.Action {
 	case "opened", "synchronized":
 		if event.PullRequest != nil {
-			h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText)
+			h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20))
 		}
 
 	case "created":
@@ -159,14 +201,13 @@ func (h *WebhookHandler) dispatch(botID int64, botName, botUsername string, aiIn
 		}
 
 	case "reviewed":
-		// Review submitted — handle like a bot command if mentions the bot
 		if event.PullRequest != nil {
 			// Future: inspect review comments for bot mentions
 		}
 
 	case "assigned":
-		if event.Issue != nil && agentEnabled {
-			h.runImplementation(ctx, aiClient, repoClient, owner, repoName, event, promptText)
+		if event.Issue != nil && bs.agentEnabled {
+			h.runImplementation(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.implTurns(50))
 		}
 
 	case "closed":
@@ -177,7 +218,7 @@ func (h *WebhookHandler) dispatch(botID int64, botName, botUsername string, aiIn
 	}
 }
 
-func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string) {
+func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int) {
 	pr := event.PullRequest
 
 	// Fetch diff for the initial prompt
@@ -229,7 +270,7 @@ When you're done, call the "done" tool with your review as markdown.`, pr.Title,
 
 	r := runner.New(aiClient, ws, reporter, session, runner.Config{
 		Mode:           runner.ModeReview,
-		MaxTurns:       h.cfg.AgentValidationMaxRetries * 5, // ~15 turns for review
+		MaxTurns:       maxTurns,
 		SystemPrompt:   promptText,
 		MaxTokens:      h.cfg.AgentMaxTokens,
 		ShellAllowlist: defaultShellAllowlist(),
@@ -288,7 +329,7 @@ func (h *WebhookHandler) runReviewFollowup(ctx context.Context, aiClient ai.Clie
 	repoClient.PostComment(ctx, owner, repoName, prNum, comment)
 }
 
-func (h *WebhookHandler) runImplementation(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string) {
+func (h *WebhookHandler) runImplementation(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int) {
 	issue := event.Issue
 
 	slog.Info("Starting implementation", "issue", issue.Number, "title", issue.Title)
@@ -334,7 +375,7 @@ When you're done, call the "done" tool with a summary of your changes.`, issue.T
 
 	r := runner.New(aiClient, ws, reporter, session, runner.Config{
 		Mode:           runner.ModeImplementation,
-		MaxTurns:       50,
+		MaxTurns:       maxTurns,
 		SystemPrompt:   promptText,
 		MaxTokens:      h.cfg.AgentMaxTokens,
 		ShellAllowlist: defaultShellAllowlist(),
