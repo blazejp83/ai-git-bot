@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -132,60 +133,16 @@ func (c *OpenAIClient) chatViaResponses(ctx context.Context, history []Message, 
 		"instructions":      prompt,
 		"input":             input,
 		"max_output_tokens": maxTokens,
-		"stream":            false,
+		"stream":            true,
 		"store":             false,
 	}
 
 	body, _ := json.Marshal(reqBody)
-	hr, err := c.doHTTPResponses(ctx, body)
+	hr, err := c.doHTTPResponsesStream(ctx, body)
 	if err != nil {
 		return "", err
 	}
-	if hr.status == http.StatusTooManyRequests {
-		return "", parse429Response(hr.status, hr.body)
-	}
-	if hr.status != http.StatusOK {
-		return "", fmt.Errorf("openai responses API error (HTTP %d): %s", hr.status, string(hr.body))
-	}
-
-	// Parse responses API format
-	var resp struct {
-		Output []struct {
-			Type    string `json:"type"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"output"`
-		Usage *struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(hr.body, &resp); err != nil {
-		return "", fmt.Errorf("parse responses: %w", err)
-	}
-
-	if resp.Usage != nil {
-		slog.Info("OpenAI Responses API", "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens)
-	}
-
-	// Extract text from output
-	var text string
-	for _, out := range resp.Output {
-		if out.Type == "message" {
-			for _, c := range out.Content {
-				if c.Type == "output_text" {
-					text += c.Text
-				}
-			}
-		}
-	}
-
-	if text == "" {
-		return "Unable to generate response - empty output from AI.", nil
-	}
-	return text, nil
+	return hr, nil
 }
 
 // --- ChatWithTools (new) ---
@@ -369,12 +326,15 @@ func (c *OpenAIClient) doHTTPFull(ctx context.Context, body []byte) (*httpResult
 // ChatGPT OAuth endpoint — matches what Codex CLI uses
 const chatGPTResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
 
-func (c *OpenAIClient) doHTTPResponses(ctx context.Context, body []byte) (*httpResult, error) {
+// doHTTPResponsesStream sends a streaming request to the ChatGPT responses
+// endpoint and collects all output_text delta events into the final text.
+func (c *OpenAIClient) doHTTPResponsesStream(ctx context.Context, body []byte) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", chatGPTResponsesURL, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+c.accessToken)
 	req.Header.Set("originator", "codex-tui")
 	if c.accountID != "" {
@@ -383,11 +343,52 @@ func (c *OpenAIClient) doHTTPResponses(ctx context.Context, body []byte) (*httpR
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("openai responses request: %w", err)
+		return "", fmt.Errorf("openai responses stream: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	return &httpResult{body: respBody, status: resp.StatusCode, headers: resp.Header}, nil
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		body, _ := io.ReadAll(resp.Body)
+		return "", parse429Response(resp.StatusCode, body)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("openai responses API error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	// Read SSE stream and collect text deltas
+	var text strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var event struct {
+			Type string `json:"type"`
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+
+		if event.Type == "response.output_text.delta" && event.Delta != "" {
+			text.WriteString(event.Delta)
+		}
+	}
+
+	result := text.String()
+	if result == "" {
+		return "Unable to generate response - empty output from AI.", nil
+	}
+
+	slog.Info("ChatGPT Responses API stream complete", "chars", len(result))
+	return result, nil
 }
 
 // Backward-compat wrapper
