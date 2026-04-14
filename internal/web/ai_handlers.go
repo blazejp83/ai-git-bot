@@ -85,6 +85,8 @@ type aiFormIntegration struct {
 	RetryTruncatedChunkCh  int
 	AuthMethod             string
 	OAuthEmail             string
+	ExtendedThinking       bool
+	ThinkingBudget         int
 }
 
 func (h *AiHandlers) NewForm(w http.ResponseWriter, r *http.Request) {
@@ -94,6 +96,7 @@ func (h *AiHandlers) NewForm(w http.ResponseWriter, r *http.Request) {
 		MaxDiffChunks:         8,
 		RetryTruncatedChunkCh: 60000,
 		AuthMethod:            "api_key",
+		ThinkingBudget:        10000,
 	}, false, ""))
 }
 
@@ -106,11 +109,11 @@ func (h *AiHandlers) EditForm(w http.ResponseWriter, r *http.Request) {
 	err := h.db.QueryRow(`
 		SELECT id, name, provider_type, api_url, COALESCE(api_version, ''), model,
 		       max_tokens, max_diff_chars_per_chunk, max_diff_chunks, retry_truncated_chunk_chars,
-		       auth_method, COALESCE(oauth_email, '')
+		       auth_method, COALESCE(oauth_email, ''), extended_thinking, thinking_budget
 		FROM ai_integrations WHERE id = ?
 	`, id).Scan(&ai.ID, &ai.Name, &ai.ProviderType, &ai.ApiURL, &apiVersion, &ai.Model,
 		&ai.MaxTokens, &ai.MaxDiffCharsPerChunk, &ai.MaxDiffChunks, &ai.RetryTruncatedChunkCh,
-		&ai.AuthMethod, &oauthEmail)
+		&ai.AuthMethod, &oauthEmail, &ai.ExtendedThinking, &ai.ThinkingBudget)
 	if err != nil {
 		http.Redirect(w, r, "/ai-integrations", http.StatusSeeOther)
 		return
@@ -144,6 +147,11 @@ func (h *AiHandlers) Save(w http.ResponseWriter, r *http.Request) {
 	maxDiffChars, _ := strconv.Atoi(r.FormValue("maxDiffCharsPerChunk"))
 	maxDiffChunks, _ := strconv.Atoi(r.FormValue("maxDiffChunks"))
 	retryChars, _ := strconv.Atoi(r.FormValue("retryTruncatedChunkChars"))
+	extThinking := r.FormValue("extendedThinking") == "true"
+	thinkBudget, _ := strconv.Atoi(r.FormValue("thinkingBudget"))
+	if thinkBudget == 0 {
+		thinkBudget = 10000
+	}
 	idStr := r.FormValue("id")
 
 	now := time.Now().UTC()
@@ -156,10 +164,10 @@ func (h *AiHandlers) Save(w http.ResponseWriter, r *http.Request) {
 			_, err := h.db.Exec(`
 				UPDATE ai_integrations SET name=?, provider_type=?, api_url=?, api_version=?,
 				       model=?, max_tokens=?, max_diff_chars_per_chunk=?, max_diff_chunks=?,
-				       retry_truncated_chunk_chars=?, updated_at=?
+				       retry_truncated_chunk_chars=?, extended_thinking=?, thinking_budget=?, updated_at=?
 				WHERE id=?
 			`, name, providerType, apiURL, nullStr(apiVersion), model, maxTokens,
-				maxDiffChars, maxDiffChunks, retryChars, now, id)
+				maxDiffChars, maxDiffChunks, retryChars, extThinking, thinkBudget, now, id)
 			if err != nil {
 				slog.Error("Failed to update AI integration", "err", err)
 			}
@@ -168,10 +176,10 @@ func (h *AiHandlers) Save(w http.ResponseWriter, r *http.Request) {
 			_, err := h.db.Exec(`
 				UPDATE ai_integrations SET name=?, provider_type=?, api_url=?, api_key=?, api_version=?,
 				       model=?, max_tokens=?, max_diff_chars_per_chunk=?, max_diff_chunks=?,
-				       retry_truncated_chunk_chars=?, auth_method='api_key', updated_at=?
+				       retry_truncated_chunk_chars=?, extended_thinking=?, thinking_budget=?, auth_method='api_key', updated_at=?
 				WHERE id=?
 			`, name, providerType, apiURL, encKey, nullStr(apiVersion), model, maxTokens,
-				maxDiffChars, maxDiffChunks, retryChars, now, id)
+				maxDiffChars, maxDiffChunks, retryChars, extThinking, thinkBudget, now, id)
 			if err != nil {
 				slog.Error("Failed to update AI integration", "err", err)
 			}
@@ -182,10 +190,10 @@ func (h *AiHandlers) Save(w http.ResponseWriter, r *http.Request) {
 		_, err := h.db.Exec(`
 			INSERT INTO ai_integrations (name, provider_type, api_url, api_key, api_version,
 			       model, max_tokens, max_diff_chars_per_chunk, max_diff_chunks,
-			       retry_truncated_chunk_chars, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			       retry_truncated_chunk_chars, extended_thinking, thinking_budget, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, name, providerType, apiURL, encKey, nullStr(apiVersion), model, maxTokens,
-			maxDiffChars, maxDiffChunks, retryChars, now, now)
+			maxDiffChars, maxDiffChunks, retryChars, extThinking, thinkBudget, now, now)
 		if err != nil {
 			slog.Error("Failed to insert AI integration", "err", err)
 		}

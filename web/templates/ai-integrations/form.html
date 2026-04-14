@@ -113,6 +113,44 @@
                     <input type="number" class="form-control" id="retryTruncatedChunkChars" name="retryTruncatedChunkChars"
                            value="{{.Integration.RetryTruncatedChunkCh}}" min="1" required/>
                 </div>
+
+                <!-- Extended Thinking -->
+                <div class="col-12 mt-3">
+                    <div class="card bg-light">
+                        <div class="card-body py-2">
+                            <div class="row align-items-center">
+                                <div class="col-md-4">
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="extendedThinking"
+                                               name="extendedThinking" value="true"{{if .Integration.ExtendedThinking}} checked{{end}}/>
+                                        <label class="form-check-label" for="extendedThinking">
+                                            <strong>Extended Thinking</strong>
+                                        </label>
+                                    </div>
+                                    <div class="form-text">
+                                        Gives the model more time to reason before responding.
+                                        Anthropic: thinking blocks. OpenAI: reasoning tokens (o-series models).
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <label for="thinkingBudget" class="form-label">Thinking Budget (tokens)</label>
+                                    <input type="number" class="form-control" id="thinkingBudget" name="thinkingBudget"
+                                           value="{{.Integration.ThinkingBudget}}" min="1000" max="128000" step="1000"/>
+                                    <div class="form-text">
+                                        Anthropic: budget_tokens (default 10,000). Higher = deeper analysis, more cost.
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="form-text mt-3">
+                                        <strong>When to use:</strong> Enable for complex code reviews and agent tasks
+                                        where deeper reasoning improves quality. Has no effect on providers
+                                        that don't support it (Ollama, llama.cpp).
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="mt-4">

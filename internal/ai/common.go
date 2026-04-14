@@ -31,6 +31,8 @@ type Config struct {
 	MaxDiffCharsPerChunk   int
 	MaxDiffChunks          int
 	RetryTruncatedChunkCh  int
+	ExtendedThinking       bool
+	ThinkingBudget         int // tokens allocated for thinking (Anthropic: budget_tokens, OpenAI: reasoning tokens)
 }
 
 // chunkingResult holds the result of splitting a diff into chunks.

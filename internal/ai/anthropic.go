@@ -32,6 +32,12 @@ type anthRequest struct {
 	System    string         `json:"system,omitempty"`
 	Messages  []anthMsg      `json:"messages"`
 	Tools     []anthTool     `json:"tools,omitempty"`
+	Thinking  *anthThinking  `json:"thinking,omitempty"`
+}
+
+type anthThinking struct {
+	Type         string `json:"type"`          // "enabled"
+	BudgetTokens int    `json:"budget_tokens"` // max tokens for thinking
 }
 
 type anthMsg struct {
@@ -124,6 +130,15 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, messages []Conversa
 		System:    prompt,
 		Messages:  aMsgs,
 		Tools:     aTools,
+	}
+
+	// Enable extended thinking if configured
+	if c.cfg.ExtendedThinking && c.cfg.ThinkingBudget > 0 {
+		reqBody.Thinking = &anthThinking{
+			Type:         "enabled",
+			BudgetTokens: c.cfg.ThinkingBudget,
+		}
+		slog.Info("Extended thinking enabled", "budget_tokens", c.cfg.ThinkingBudget)
 	}
 
 	body, err := json.Marshal(reqBody)

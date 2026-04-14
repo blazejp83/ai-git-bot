@@ -48,17 +48,18 @@ func (f *ClientFactory) GetClient(db *sql.DB, integrationID int64) (Client, erro
 	var id int64
 	var name, providerType, apiURL, model, authMethod string
 	var apiKey, accessToken, oauthAccountID sql.NullString
-	var maxTokens, maxDiffChars, maxDiffChunks, retryChars int
+	var maxTokens, maxDiffChars, maxDiffChunks, retryChars, thinkingBudget int
+	var extendedThinking bool
 	var updatedAt string
 
 	err := db.QueryRow(`
 		SELECT id, name, provider_type, api_url, api_key, model,
 		       max_tokens, max_diff_chars_per_chunk, max_diff_chunks, retry_truncated_chunk_chars,
-		       auth_method, access_token, oauth_account_id, updated_at
+		       auth_method, access_token, oauth_account_id, extended_thinking, thinking_budget, updated_at
 		FROM ai_integrations WHERE id = ?
 	`, integrationID).Scan(&id, &name, &providerType, &apiURL, &apiKey, &model,
 		&maxTokens, &maxDiffChars, &maxDiffChunks, &retryChars,
-		&authMethod, &accessToken, &oauthAccountID, &updatedAt)
+		&authMethod, &accessToken, &oauthAccountID, &extendedThinking, &thinkingBudget, &updatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("load ai integration %d: %w", integrationID, err)
 	}
@@ -77,6 +78,8 @@ func (f *ClientFactory) GetClient(db *sql.DB, integrationID int64) (Client, erro
 		MaxDiffCharsPerChunk:  maxDiffChars,
 		MaxDiffChunks:         maxDiffChunks,
 		RetryTruncatedChunkCh: retryChars,
+		ExtendedThinking:      extendedThinking,
+		ThinkingBudget:        thinkingBudget,
 	}
 
 	var client Client

@@ -35,10 +35,11 @@ func (c *OpenAIClient) SupportsNativeTools() bool { return true }
 // --- Wire types ---
 
 type oaiRequest struct {
-	Model     string       `json:"model"`
-	Messages  []oaiMsg     `json:"messages"`
-	MaxTokens int          `json:"max_completion_tokens"`
-	Tools     []oaiTool    `json:"tools,omitempty"`
+	Model            string       `json:"model"`
+	Messages         []oaiMsg     `json:"messages"`
+	MaxTokens        int          `json:"max_completion_tokens"`
+	Tools            []oaiTool    `json:"tools,omitempty"`
+	ReasoningEffort  string       `json:"reasoning_effort,omitempty"` // "low", "medium", "high" for o-series models
 }
 
 type oaiMsg struct {
@@ -140,6 +141,12 @@ func (c *OpenAIClient) ChatWithTools(ctx context.Context, messages []Conversatio
 		Messages:  oaiMsgs,
 		MaxTokens: maxTokens,
 		Tools:     oaiTools,
+	}
+
+	// Enable reasoning for o-series models when extended thinking is on
+	if c.cfg.ExtendedThinking {
+		reqBody.ReasoningEffort = "high"
+		slog.Info("Reasoning effort enabled", "level", "high")
 	}
 
 	body, err := json.Marshal(reqBody)
