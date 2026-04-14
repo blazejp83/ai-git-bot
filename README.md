@@ -108,6 +108,89 @@ volumes:
 5. **Create a Bot** — link AI + Git integrations, set a system prompt, copy the webhook URL
 6. **Configure webhooks** in your Git provider pointing to the bot's webhook URL
 
+## Git Platform Setup
+
+Each bot needs its own user account on the Git platform. That account posts review comments, creates PRs, and receives @mentions.
+
+### Gitea
+
+1. **Create a bot user** on your Gitea instance (e.g. `ai-bot`)
+2. **Grant access** — add the bot user as a collaborator (write) on repos you want reviewed
+3. **Generate an API token** — log in as the bot user, go to Settings > Applications > Generate Token
+4. **In AI Git Bot:**
+   - Create a **Git Integration**: provider `GITEA`, URL `https://your-gitea.example.com`, paste the token
+   - Create a **Bot**: set username to `ai-bot`, link to the Git + AI integrations
+   - Copy the bot's **Webhook URL** (shown on the bot edit page)
+5. **Configure webhook in Gitea:**
+   - Go to repo Settings > Webhooks > Add Webhook > Gitea
+   - Paste the webhook URL
+   - Content Type: `application/json`
+   - Events: select "Pull Requests", "Issue Comments", and optionally "Issues" (for agent)
+   - Save
+
+### GitHub
+
+1. **Create a bot account** on GitHub (e.g. `ai-reviewer-bot`)
+2. **Invite as collaborator** on your repos (with write access)
+3. **Generate a PAT** — log in as the bot, go to Settings > Developer settings > Personal access tokens > Fine-grained tokens
+   - Repository access: select your repos
+   - Permissions: Contents (read/write), Pull requests (read/write), Issues (read/write)
+4. **In AI Git Bot:**
+   - Create a **Git Integration**: provider `GITHUB`, URL `https://api.github.com`, paste the PAT
+   - Create a **Bot**: set username to `ai-reviewer-bot`, link to the Git + AI integrations
+   - Copy the bot's **Webhook URL**
+5. **Configure webhook in GitHub:**
+   - Go to repo Settings > Webhooks > Add webhook
+   - Payload URL: paste the webhook URL
+   - Content type: `application/json`
+   - Events: select "Pull requests", "Issue comments", "Pull request reviews", and optionally "Issues"
+   - Save
+
+### GitLab
+
+1. **Create a bot user** on your GitLab instance (e.g. `ai-bot`)
+2. **Add as project member** with Developer role (or higher)
+3. **Generate a PAT** — log in as the bot, go to Settings > Access Tokens
+   - Scopes: `api`, `read_repository`
+4. **In AI Git Bot:**
+   - Create a **Git Integration**: provider `GITLAB`, URL `https://gitlab.com` (or your self-hosted URL), paste the PAT
+   - Create a **Bot**: set username to `ai-bot`, link to the Git + AI integrations
+   - Copy the bot's **Webhook URL**
+5. **Configure webhook in GitLab:**
+   - Go to project Settings > Webhooks
+   - URL: paste the webhook URL
+   - Triggers: select "Merge request events", "Note events", and optionally "Issue events"
+   - Save
+
+### Bitbucket Cloud
+
+1. **Create a bot account** on Bitbucket (or use a workspace service account)
+2. **Grant repo access** — add the bot as a collaborator with write permissions
+3. **Create an App Password** — log in as the bot, go to Personal settings > App passwords
+   - Permissions: Repositories (read/write), Pull requests (read/write)
+4. **In AI Git Bot:**
+   - Create a **Git Integration**: provider `BITBUCKET`, URL `https://api.bitbucket.org/2.0`, set username + app password
+   - Create a **Bot**: set username to the bot's Bitbucket username, link to the Git + AI integrations
+   - Copy the bot's **Webhook URL**
+5. **Configure webhook in Bitbucket:**
+   - Go to repo Settings > Webhooks > Add webhook
+   - URL: paste the webhook URL
+   - Triggers: select "Pull request: Created", "Pull request: Updated", "Pull request: Comment created"
+   - Save
+
+### Multi-platform setup
+
+You can run multiple bots on the same AI Git Bot instance — one per Git platform. All bots can share the same AI Integration (e.g. one OpenAI OAuth connection):
+
+```
+AI Integration: "OpenAI (OAuth)"
+  |
+  ├── Git Integration: "My Gitea"     → Bot: "gitea-reviewer"  (username: ai-bot)
+  └── Git Integration: "My GitHub"    → Bot: "github-reviewer" (username: ai-reviewer-bot)
+```
+
+Each bot gets its own webhook URL. Configure webhooks in each platform pointing to the respective bot's URL.
+
 ## Architecture
 
 ```
