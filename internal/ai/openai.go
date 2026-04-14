@@ -365,15 +365,19 @@ func (c *OpenAIClient) doHTTPFull(ctx context.Context, body []byte) (*httpResult
 	return &httpResult{body: respBody, status: resp.StatusCode, headers: resp.Header}, nil
 }
 
+// ChatGPT OAuth endpoint — matches what Codex CLI uses
+const chatGPTResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
+
 func (c *OpenAIClient) doHTTPResponses(ctx context.Context, body []byte) (*httpResult, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/responses", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", chatGPTResponsesURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	req.Header.Set("originator", "codex-tui")
 	if c.accountID != "" {
-		req.Header.Set("ChatGPT-Account-ID", c.accountID)
+		req.Header.Set("chatgpt-account-id", c.accountID)
 	}
 
 	resp, err := c.httpClient.Do(req)
