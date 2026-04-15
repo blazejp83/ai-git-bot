@@ -20,11 +20,11 @@ AI-Git-Bot is a lightweight, self-hostable **gateway application** that connects
 
 - **Agentic code review** — the AI explores the repo with tools (`read_file`, `search`, `shell`) before writing its review, not just looking at the diff
 - **Autonomous issue implementation** — assign an issue to the bot, it writes the code and opens a PR
-- **4 AI providers** — OpenAI (with OAuth login), Anthropic, Ollama, llama.cpp
+- **5 AI providers** — Codex CLI, Gemini CLI, Anthropic, Ollama, llama.cpp
 - **4 Git platforms** — Gitea, GitHub/GitHub Enterprise, GitLab, Bitbucket Cloud
-- **Native tool calling** — structured tool use for OpenAI and Anthropic, OpenAI-compatible for Ollama, JSON shim for llama.cpp
-- **Extended thinking** — toggle Anthropic thinking blocks or OpenAI reasoning tokens per integration
-- **OpenAI OAuth login** — authenticate with your ChatGPT account instead of API keys (PKCE + device code flow)
+- **CLI instrumentation** — Codex and Gemini run as non-interactive subprocesses; auth is handled by the CLIs themselves (no API keys needed)
+- **Native tool calling** — structured tool use for Anthropic, OpenAI-compatible for Ollama, JSON shim for llama.cpp; CLI providers run in full-auto mode
+- **Extended thinking** — toggle Anthropic thinking blocks per integration
 - **Rate limit handling** — proactive budget warnings at 75/90/95% usage, graceful stop on hard limits with reset time
 - **Per-bot configuration** — custom system prompts, turn limits, enable/disable agent mode per bot
 - **Web admin UI** — dashboard, bot management, AI/Git integration CRUD, encrypted secret storage
@@ -103,7 +103,7 @@ volumes:
 
 1. Navigate to `http://localhost:8080`
 2. Create your administrator account
-3. **Create an AI Integration** — select provider, enter API key (or use "Login with OpenAI" for OAuth)
+3. **Create an AI Integration** — select provider (Codex/Gemini need no API key; Anthropic requires one)
 4. **Create a Git Integration** — select platform, enter URL and token
 5. **Create a Bot** — link AI + Git integrations, set a system prompt, copy the webhook URL
 6. **Configure webhooks** in your Git provider pointing to the bot's webhook URL
@@ -180,10 +180,10 @@ Each bot needs its own user account on the Git platform. That account posts revi
 
 ### Multi-platform setup
 
-You can run multiple bots on the same AI Git Bot instance — one per Git platform. All bots can share the same AI Integration (e.g. one OpenAI OAuth connection):
+You can run multiple bots on the same AI Git Bot instance — one per Git platform. All bots can share the same AI Integration:
 
 ```
-AI Integration: "OpenAI (OAuth)"
+AI Integration: "Codex"
   |
   ├── Git Integration: "My Gitea"     → Bot: "gitea-reviewer"  (username: ai-bot)
   └── Git Integration: "My GitHub"    → Bot: "github-reviewer" (username: ai-reviewer-bot)
@@ -216,12 +216,13 @@ Webhook arrives (Gitea/GitHub/GitLab/Bitbucket)
 
 ### Supported providers
 
-| AI Provider | Tool Calling | Extended Thinking |
-|------------|-------------|-------------------|
-| **OpenAI** | Native `tool_calls` | `reasoning_effort` for o-series |
-| **Anthropic** | Native `tool_use` blocks | `thinking` budget tokens |
-| **Ollama** | OpenAI-compatible | -- |
-| **llama.cpp** | JSON shim + GBNF grammar | -- |
+| AI Provider | Integration | Tool Calling | Extended Thinking |
+|------------|-------------|-------------|-------------------|
+| **Codex CLI** | CLI subprocess (`codex exec`) | Full-auto mode (CLI handles tools) | -- |
+| **Gemini CLI** | CLI subprocess (`gemini`) | Full-auto mode (CLI handles tools) | -- |
+| **Anthropic** | Direct API | Native `tool_use` blocks | `thinking` budget tokens |
+| **Ollama** | Direct API | OpenAI-compatible `tool_calls` | -- |
+| **llama.cpp** | Direct API | JSON shim + GBNF grammar | -- |
 
 ## Configuration
 
@@ -262,7 +263,7 @@ The full image includes: Java 21 + Maven + Gradle, Node.js + npm + TypeScript + 
 | Templates | Go `html/template` + Bootstrap 5 |
 | Auth | bcrypt + HMAC-signed session cookies |
 | Encryption | AES-256-GCM (stdlib `crypto/aes`) |
-| OAuth | OpenAI PKCE + device code flow |
+| CLI providers | Codex CLI, Gemini CLI (non-interactive subprocess) |
 | Dependencies | 3 external (chi, sqlite3, bcrypt) |
 
 ## License
