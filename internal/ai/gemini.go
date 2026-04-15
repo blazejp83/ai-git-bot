@@ -80,7 +80,23 @@ func findGeminiBin() (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("gemini binary not found — install Gemini CLI: https://github.com/google-gemini/gemini-cli")
+	return "", fmt.Errorf("gemini binary not found. " +
+		"Install Gemini CLI (https://github.com/google-gemini/gemini-cli) or, " +
+		"if running in Docker, mount the binary and auth directory from the host:\n" +
+		"  volumes:\n" +
+		"    - /path/to/gemini:/usr/local/bin/gemini:ro\n" +
+		"    - ${HOME}/.gemini:/home/app/.gemini:ro")
+}
+
+// checkGeminiAuth warns if the gemini auth directory is missing.
+func checkGeminiAuth() {
+	home, _ := os.UserHomeDir()
+	geminiDir := filepath.Join(home, ".gemini")
+	if _, err := os.Stat(geminiDir); os.IsNotExist(err) {
+		slog.Warn("Gemini auth directory not found — CLI calls may fail unless an API key is configured",
+			"expected", geminiDir,
+			"hint", "Run 'gemini auth login' on the host, then mount ~/.gemini into the container")
+	}
 }
 
 // invokeGemini runs the gemini CLI non-interactively and returns the response text.
@@ -88,6 +104,11 @@ func invokeGemini(ctx context.Context, model, systemPrompt, userMessage, workDir
 	bin, err := findGeminiBin()
 	if err != nil {
 		return "", err
+	}
+
+	// Warn (once) if auth directory is missing and no API key is provided
+	if apiKey == "" {
+		checkGeminiAuth()
 	}
 
 	// Resolve working directory

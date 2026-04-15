@@ -82,7 +82,23 @@ func findCodexBin() (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("codex binary not found — install Codex CLI: https://github.com/openai/codex")
+	return "", fmt.Errorf("codex binary not found. " +
+		"Install Codex CLI (https://github.com/openai/codex) or, " +
+		"if running in Docker, mount the binary and auth directory from the host:\n" +
+		"  volumes:\n" +
+		"    - ${HOME}/.local/bin/codex:/usr/local/bin/codex:ro\n" +
+		"    - ${HOME}/.codex:/home/app/.codex:ro")
+}
+
+// checkCodexAuth warns if the codex auth directory is missing.
+func checkCodexAuth() {
+	home, _ := os.UserHomeDir()
+	codexDir := filepath.Join(home, ".codex")
+	if _, err := os.Stat(codexDir); os.IsNotExist(err) {
+		slog.Warn("Codex auth directory not found — CLI calls may fail unless an API key is configured",
+			"expected", codexDir,
+			"hint", "Run 'codex auth login' on the host, then mount ~/.codex into the container")
+	}
 }
 
 // invokeCodex runs `codex exec` non-interactively and returns the response text.
@@ -90,6 +106,11 @@ func invokeCodex(ctx context.Context, model, systemPrompt, userMessage, workDir,
 	bin, err := findCodexBin()
 	if err != nil {
 		return "", err
+	}
+
+	// Warn (once) if auth directory is missing and no API key is provided
+	if apiKey == "" {
+		checkCodexAuth()
 	}
 
 	// Resolve working directory

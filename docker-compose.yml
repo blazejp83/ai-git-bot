@@ -1,6 +1,6 @@
 services:
   ai-git-bot:
-    image: registry.bpds1621.synology.me/ai-git-bot:2.0.0
+    image: registry.bpds1621.synology.me/ai-git-bot:2.1.0
     user: "1000:1000"
     ports:
       - "8080:8080"
@@ -9,4 +9,12 @@ services:
       SESSION_SECRET: ${SESSION_SECRET}
     volumes:
       - ./data:/data
+      # CLI providers — mount binaries and auth directories from the host.
+      # Only needed for providers you intend to use.
+      # Codex CLI (OpenAI)
+      #- ${HOME}/.local/bin/codex:/usr/local/bin/codex:ro
+      #- ${HOME}/.codex:/home/app/.codex:ro
+      # Gemini CLI (Google)
+      #- /usr/local/bin/gemini:/usr/local/bin/gemini:ro
+      #- ${HOME}/.gemini:/home/app/.gemini:ro
     restart: unless-stopped

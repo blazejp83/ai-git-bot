@@ -99,6 +99,23 @@ volumes:
   pgdata:
 ```
 
+### CLI providers in Docker
+
+The Codex and Gemini providers work by invoking the respective CLIs as subprocesses. When running in Docker, the CLI binaries and their auth directories must be mounted from the host:
+
+```yaml
+volumes:
+  # Codex CLI (OpenAI) — authenticate on host first: codex auth login
+  - ${HOME}/.local/bin/codex:/usr/local/bin/codex:ro
+  - ${HOME}/.codex:/home/app/.codex:ro
+
+  # Gemini CLI (Google) — authenticate on host first: gemini auth login
+  - /usr/local/bin/gemini:/usr/local/bin/gemini:ro
+  - ${HOME}/.gemini:/home/app/.gemini:ro
+```
+
+Only mount the providers you plan to use. If a CLI is not available at runtime, the integration will return a clear error with setup instructions. Anthropic, Ollama, and llama.cpp use direct API calls and work without any mounts.
+
 ### Setup
 
 1. Navigate to `http://localhost:8080`
