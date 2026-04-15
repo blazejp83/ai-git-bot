@@ -215,11 +215,15 @@ func (r *Runner) saveAssistantMessage(response *ai.ChatResponse) {
 }
 
 func (r *Runner) chatOpts() ai.ChatOpts {
-	return ai.ChatOpts{
-		SystemPrompt:     r.config.SystemPrompt,
-		ModelOverride:    r.config.ModelOverride,
+	opts := ai.ChatOpts{
+		SystemPrompt:      r.config.SystemPrompt,
+		ModelOverride:     r.config.ModelOverride,
 		MaxTokensOverride: r.config.MaxTokens,
 	}
+	if r.workspace != nil {
+		opts.WorkDir = r.workspace.Dir
+	}
+	return opts
 }
 
 // (no helpers needed — time.Duration conversion is inline)

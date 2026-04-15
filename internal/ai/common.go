@@ -1,9 +1,12 @@
 package ai
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
+	"time"
 )
 
 const DefaultSystemPrompt = `You are an experienced software engineer performing a code review.
@@ -216,4 +219,120 @@ func chatCommon(cfg Config, history []Message, userMessage string, opts ChatOpts
 	messages = append(messages, Message{Role: "user", Content: userMessage})
 
 	return sendChat(prompt, model, maxTokens, messages)
+}
+
+// --- Shared wire types used by multiple providers ---
+
+// httpResult is the standard HTTP response wrapper used by API-based providers.
+type httpResult struct {
+	body    []byte
+	status  int
+	headers http.Header
+}
+
+// oaiTool is the OpenAI-compatible tool definition wire format.
+// Used by Ollama (which speaks OpenAI tool format).
+type oaiTool struct {
+	Type     string      `json:"type"`
+	Function oaiFunction `json:"function"`
+}
+
+type oaiFunction struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+type oaiToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// parse429Response parses a 429 response and returns either a retryable
+// RateLimitError or a non-retryable UsageLimitError.
+func parse429Response(status int, body []byte) error {
+	var errResp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+		ErrorType string `json:"error_type"`
+		ResetAt   int64  `json:"resets_at"`
+		PlanType  string `json:"plan_type"`
+	}
+	json.Unmarshal(body, &errResp)
+
+	code := errResp.Error.Code
+	if code == "" {
+		code = errResp.ErrorType
+	}
+	msg := errResp.Error.Message
+
+	slog.Warn("429 response", "code", code, "message", msg)
+
+	switch code {
+	case "usage_limit_reached":
+		ule := &UsageLimitError{
+			ErrorType: code,
+			Message:   msg,
+			PlanType:  errResp.PlanType,
+		}
+		if errResp.ResetAt > 0 {
+			ule.ResetsAt = time.Unix(errResp.ResetAt, 0)
+		}
+		return ule
+
+	case "insufficient_quota":
+		return &UsageLimitError{
+			ErrorType: code,
+			Message:   "API key has no remaining credits.",
+		}
+
+	case "usage_not_included":
+		return &UsageLimitError{
+			ErrorType: code,
+			Message:   "This feature is not available on your plan.",
+		}
+
+	default:
+		retryAfter := 5 * time.Second
+		if d := parseRetryDelay(msg); d > 0 {
+			retryAfter = d
+		}
+		return &RateLimitError{
+			StatusCode: status,
+			RetryAfter: retryAfter,
+			Body:       string(body),
+		}
+	}
+}
+
+// parseRetryDelay extracts a duration from messages like "try again in 28ms".
+func parseRetryDelay(msg string) time.Duration {
+	msg = strings.ToLower(msg)
+	idx := strings.Index(msg, "try again in")
+	if idx < 0 {
+		return 0
+	}
+	after := strings.TrimSpace(msg[idx+len("try again in"):])
+
+	var val float64
+	var unit string
+	if _, err := fmt.Sscanf(after, "%f%s", &val, &unit); err == nil {
+		unit = strings.TrimSuffix(strings.TrimSpace(unit), ".")
+		switch {
+		case strings.HasPrefix(unit, "ms"):
+			return time.Duration(val * float64(time.Millisecond))
+		case strings.HasPrefix(unit, "s"):
+			return time.Duration(val * float64(time.Second))
+		case strings.HasPrefix(unit, "m"):
+			return time.Duration(val * float64(time.Minute))
+		}
+	}
+	return 0
 }

@@ -14,27 +14,19 @@ type AdminUser struct {
 }
 
 type AiIntegration struct {
-	ID                     int64
-	Name                   string
-	ProviderType           string
-	ApiURL                 string
-	ApiKey                 string
-	ApiVersion             sql.NullString
-	Model                  string
-	MaxTokens              int
-	MaxDiffCharsPerChunk   int
-	MaxDiffChunks          int
-	RetryTruncatedChunkCh  int
-	// OAuth fields
-	AuthMethod             string // "api_key" or "oauth"
-	AccessToken            sql.NullString
-	RefreshToken           sql.NullString
-	IDToken                sql.NullString
-	TokenExpiresAt         sql.NullTime
-	OAuthEmail             sql.NullString
-	OAuthAccountID         sql.NullString
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	ID                    int64
+	Name                  string
+	ProviderType          string
+	ApiURL                string
+	ApiKey                string
+	ApiVersion            sql.NullString
+	Model                 string
+	MaxTokens             int
+	MaxDiffCharsPerChunk  int
+	MaxDiffChunks         int
+	RetryTruncatedChunkCh int
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type GitIntegration struct {

@@ -8,35 +8,6 @@
     </h2>
 </div>
 
-{{if .OAuthError}}
-<div class="alert alert-danger alert-dismissible fade show" role="alert">
-    <i class="bi bi-exclamation-triangle"></i> {{.OAuthError}}
-    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-</div>
-{{end}}
-
-{{if and .IsEdit (eq .Integration.AuthMethod "oauth")}}
-<!-- OAuth Status Card -->
-<div class="card mb-3 border-success">
-    <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center">
-            <div>
-                <h6 class="mb-1"><i class="bi bi-shield-check text-success"></i> Authenticated via OpenAI OAuth</h6>
-                {{if .Integration.OAuthEmail}}
-                <span class="text-muted">Logged in as: <strong>{{.Integration.OAuthEmail}}</strong></span>
-                {{end}}
-            </div>
-            <form action="/ai-integrations/{{.Integration.ID}}/oauth/revoke" method="post" class="d-inline">
-                <button type="submit" class="btn btn-sm btn-outline-danger"
-                        onclick="return confirm('Revoke OAuth tokens and switch back to API key?');">
-                    <i class="bi bi-x-circle"></i> Revoke OAuth
-                </button>
-            </form>
-        </div>
-    </div>
-</div>
-{{end}}
-
 <div class="card">
     <div class="card-body">
         <form action="/ai-integrations/save" method="post">
@@ -46,7 +17,7 @@
                 <div class="col-md-6">
                     <label for="name" class="form-label">Name</label>
                     <input type="text" class="form-control" id="name" name="name"
-                           value="{{.Integration.Name}}" placeholder="e.g. My OpenAI Integration" required/>
+                           value="{{.Integration.Name}}" placeholder="e.g. My Codex Integration" required/>
                 </div>
                 <div class="col-md-6">
                     <label for="providerType" class="form-label">Provider Type</label>
@@ -58,37 +29,19 @@
                     </select>
                 </div>
 
-                <div class="col-md-6">
+                <div class="col-md-6" id="apiUrlGroup">
                     <label for="apiUrl" class="form-label">API URL</label>
                     <input type="url" class="form-control" id="apiUrl" name="apiUrl"
-                           value="{{.Integration.ApiURL}}" placeholder="e.g. https://api.openai.com" required/>
+                           value="{{.Integration.ApiURL}}" placeholder="e.g. https://api.anthropic.com"/>
                     <div class="form-text" id="apiUrlHint"></div>
                 </div>
                 <div class="col-md-6">
-                    <label for="apiKey" class="form-label">Authentication</label>
-                    {{if and .IsEdit (eq .Integration.AuthMethod "oauth")}}
-                    <!-- Already authenticated via OAuth — shown in the status card above -->
-                    <div class="form-text text-success"><i class="bi bi-shield-check"></i> Authenticated via OpenAI OAuth</div>
-                    {{else}}
+                    <label for="apiKey" class="form-label">API Key</label>
                     <input type="password" class="form-control" id="apiKey" name="apiKey"
-                           placeholder="{{if .IsEdit}}Leave blank to keep current{{else}}Enter API key{{end}}"/>
-                    {{if .IsEdit}}
-                    <div class="form-text">Leave blank to keep current API key.</div>
-                    {{end}}
-                    {{if and .IsEdit (eq .Integration.ProviderType "openai")}}
-                    <div class="mt-2">
-                        <a href="/ai-integrations/{{.Integration.ID}}/oauth" class="btn btn-sm btn-outline-success">
-                            <i class="bi bi-shield-check"></i> Or login with OpenAI account
-                        </a>
-                        <div class="form-text">Use your ChatGPT subscription instead of an API key.</div>
+                           placeholder="{{if .IsEdit}}Leave blank to keep current{{else}}Enter API key (optional for CLI providers){{end}}"/>
+                    <div class="form-text" id="apiKeyHint">
+                        {{if .IsEdit}}Leave blank to keep current API key.{{end}}
                     </div>
-                    {{end}}
-                    {{if not .IsEdit}}
-                    <div class="form-text" id="oauthHint" style="display:none;">
-                        <i class="bi bi-info-circle"></i> Save this integration first, then you can connect your OpenAI account via OAuth instead of using an API key.
-                    </div>
-                    {{end}}
-                    {{end}}
                 </div>
 
                 <div class="col-md-6">
@@ -99,8 +52,10 @@
                 <div class="col-md-6">
                     <label for="model" class="form-label">Model</label>
                     <input type="text" class="form-control" id="model" name="model"
-                           value="{{.Integration.Model}}" placeholder="e.g. gpt-4o, claude-sonnet-4-6" required/>
-                    <div class="form-text" id="modelHint"></div>
+                           value="{{.Integration.Model}}" placeholder="Select a provider to see available models" required
+                           list="modelSuggestions"/>
+                    <datalist id="modelSuggestions"></datalist>
+                    <div class="mt-1" id="modelChips"></div>
                 </div>
 
                 <div class="col-md-3">
@@ -139,7 +94,7 @@
                                     </div>
                                     <div class="form-text">
                                         Gives the model more time to reason before responding.
-                                        Anthropic: thinking blocks. OpenAI: reasoning tokens (o-series models).
+                                        Anthropic: thinking blocks. Has no effect on CLI providers or Ollama/llama.cpp.
                                     </div>
                                 </div>
                                 <div class="col-md-4">
@@ -153,8 +108,7 @@
                                 <div class="col-md-4">
                                     <div class="form-text mt-3">
                                         <strong>When to use:</strong> Enable for complex code reviews and agent tasks
-                                        where deeper reasoning improves quality. Has no effect on providers
-                                        that don't support it (Ollama, llama.cpp).
+                                        where deeper reasoning improves quality.
                                     </div>
                                 </div>
                             </div>
@@ -180,13 +134,110 @@
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     var providerSelect = document.getElementById('providerType');
-    var oauthHint = document.getElementById('oauthHint');
-    if (providerSelect && oauthHint) {
-        function toggleHint() {
-            oauthHint.style.display = providerSelect.value === 'openai' ? 'block' : 'none';
+    var apiUrlGroup = document.getElementById('apiUrlGroup');
+    var apiUrlInput = document.getElementById('apiUrl');
+    var apiKeyHint = document.getElementById('apiKeyHint');
+    var modelInput = document.getElementById('model');
+    var modelChips = document.getElementById('modelChips');
+    var modelDatalist = document.getElementById('modelSuggestions');
+
+    var cliProviders = ['codex', 'gemini'];
+
+    var defaultApiUrls = {
+        {{- range $k, $v := .DefaultApiUrls}}
+        "{{$k}}": "{{$v}}",
+        {{- end}}
+    };
+
+    var suggestedModels = {
+        {{- range $k, $v := .SuggestedModels}}
+        "{{$k}}": [{{range $i, $m := $v}}{{if $i}},{{end}}"{{$m}}"{{end}}],
+        {{- end}}
+    };
+
+    function updateProviderUI() {
+        var provider = providerSelect.value;
+        var isCLI = cliProviders.indexOf(provider) !== -1;
+
+        // Hide API URL for CLI providers
+        if (isCLI) {
+            apiUrlGroup.style.display = 'none';
+            apiUrlInput.removeAttribute('required');
+        } else {
+            apiUrlGroup.style.display = '';
+            apiUrlInput.setAttribute('required', 'required');
         }
-        providerSelect.addEventListener('change', toggleHint);
-        toggleHint();
+
+        // Auto-fill API URL for new integrations
+        if (!apiUrlInput.value && defaultApiUrls[provider]) {
+            apiUrlInput.value = defaultApiUrls[provider];
+        }
+
+        // Update API key hint
+        if (isCLI) {
+            apiKeyHint.innerHTML = 'Optional. CLI providers use their own auth. An API key here is passed as an env var.';
+        } else {
+            apiKeyHint.innerHTML = '{{if .IsEdit}}Leave blank to keep current API key.{{else}}{{end}}';
+        }
+
+        // Update model suggestions
+        updateModelSuggestions(provider);
+    }
+
+    function updateModelSuggestions(provider) {
+        var models = suggestedModels[provider] || [];
+
+        // Update datalist for autocomplete
+        modelDatalist.innerHTML = '';
+        models.forEach(function(m) {
+            var opt = document.createElement('option');
+            opt.value = m;
+            modelDatalist.appendChild(opt);
+        });
+
+        // Update clickable chips
+        modelChips.innerHTML = '';
+        if (models.length === 0) return;
+
+        models.forEach(function(m, i) {
+            var chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'btn btn-sm me-1 mb-1 ' + (i === 0 ? 'btn-outline-primary' : 'btn-outline-secondary');
+            chip.textContent = m;
+            chip.addEventListener('click', function() {
+                modelInput.value = m;
+                // Update active state
+                modelChips.querySelectorAll('button').forEach(function(b) {
+                    b.className = b.className.replace('btn-primary', 'btn-outline-primary')
+                                             .replace('btn-secondary', 'btn-outline-secondary');
+                });
+                chip.className = chip.className.replace('btn-outline-primary', 'btn-primary')
+                                               .replace('btn-outline-secondary', 'btn-primary');
+            });
+            modelChips.appendChild(chip);
+        });
+
+        // Highlight current model if it matches a chip
+        highlightCurrentModel();
+    }
+
+    function highlightCurrentModel() {
+        var current = modelInput.value;
+        modelChips.querySelectorAll('button').forEach(function(chip) {
+            if (chip.textContent === current) {
+                chip.className = chip.className.replace('btn-outline-primary', 'btn-primary')
+                                               .replace('btn-outline-secondary', 'btn-primary');
+            } else {
+                chip.className = chip.className.replace(/btn-primary\b/g, 'btn-outline-secondary');
+            }
+        });
+    }
+
+    modelInput.addEventListener('input', highlightCurrentModel);
+
+    if (providerSelect) {
+        providerSelect.addEventListener('change', updateProviderUI);
+        updateProviderUI();
     }
 });
 </script>

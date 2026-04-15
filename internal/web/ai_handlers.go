@@ -29,15 +29,12 @@ type aiIntegrationRow struct {
 	ApiURL       string
 	Model        string
 	MaxTokens    int
-	AuthMethod   string
-	OAuthEmail   string
 	CreatedAt    string
 }
 
 func (h *AiHandlers) List(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(`
-		SELECT id, name, provider_type, api_url, model, max_tokens, auth_method,
-		       COALESCE(oauth_email, ''), created_at
+		SELECT id, name, provider_type, api_url, model, max_tokens, created_at
 		FROM ai_integrations ORDER BY name
 	`)
 	if err != nil {
@@ -51,7 +48,7 @@ func (h *AiHandlers) List(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var ai aiIntegrationRow
 		rows.Scan(&ai.ID, &ai.Name, &ai.ProviderType, &ai.ApiURL, &ai.Model,
-			&ai.MaxTokens, &ai.AuthMethod, &ai.OAuthEmail, &ai.CreatedAt)
+			&ai.MaxTokens, &ai.CreatedAt)
 		integrations = append(integrations, ai)
 	}
 
@@ -62,31 +59,28 @@ func (h *AiHandlers) List(w http.ResponseWriter, r *http.Request) {
 }
 
 type aiFormData struct {
-	ActiveNav              string
-	Integration            aiFormIntegration
-	ProviderTypes          []string
-	DefaultApiUrls         map[string]string
-	SuggestedModels        map[string][]string
-	IsEdit                 bool
-	Error                  string
-	OAuthError             string
+	ActiveNav       string
+	Integration     aiFormIntegration
+	ProviderTypes   []string
+	DefaultApiUrls  map[string]string
+	SuggestedModels map[string][]string
+	IsEdit          bool
+	Error           string
 }
 
 type aiFormIntegration struct {
-	ID                     int64
-	Name                   string
-	ProviderType           string
-	ApiURL                 string
-	ApiVersion             string
-	Model                  string
-	MaxTokens              int
-	MaxDiffCharsPerChunk   int
-	MaxDiffChunks          int
-	RetryTruncatedChunkCh  int
-	AuthMethod             string
-	OAuthEmail             string
-	ExtendedThinking       bool
-	ThinkingBudget         int
+	ID                    int64
+	Name                  string
+	ProviderType          string
+	ApiURL                string
+	ApiVersion            string
+	Model                 string
+	MaxTokens             int
+	MaxDiffCharsPerChunk  int
+	MaxDiffChunks         int
+	RetryTruncatedChunkCh int
+	ExtendedThinking      bool
+	ThinkingBudget        int
 }
 
 func (h *AiHandlers) NewForm(w http.ResponseWriter, r *http.Request) {
@@ -95,9 +89,8 @@ func (h *AiHandlers) NewForm(w http.ResponseWriter, r *http.Request) {
 		MaxDiffCharsPerChunk:  120000,
 		MaxDiffChunks:         8,
 		RetryTruncatedChunkCh: 60000,
-		AuthMethod:            "api_key",
 		ThinkingBudget:        10000,
-	}, false, ""))
+	}, false))
 }
 
 func (h *AiHandlers) EditForm(w http.ResponseWriter, r *http.Request) {
@@ -105,15 +98,15 @@ func (h *AiHandlers) EditForm(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(idStr, 10, 64)
 
 	var ai aiFormIntegration
-	var apiVersion, oauthEmail sql.NullString
+	var apiVersion sql.NullString
 	err := h.db.QueryRow(`
 		SELECT id, name, provider_type, api_url, COALESCE(api_version, ''), model,
 		       max_tokens, max_diff_chars_per_chunk, max_diff_chunks, retry_truncated_chunk_chars,
-		       auth_method, COALESCE(oauth_email, ''), extended_thinking, thinking_budget
+		       extended_thinking, thinking_budget
 		FROM ai_integrations WHERE id = ?
 	`, id).Scan(&ai.ID, &ai.Name, &ai.ProviderType, &ai.ApiURL, &apiVersion, &ai.Model,
 		&ai.MaxTokens, &ai.MaxDiffCharsPerChunk, &ai.MaxDiffChunks, &ai.RetryTruncatedChunkCh,
-		&ai.AuthMethod, &oauthEmail, &ai.ExtendedThinking, &ai.ThinkingBudget)
+		&ai.ExtendedThinking, &ai.ThinkingBudget)
 	if err != nil {
 		http.Redirect(w, r, "/ai-integrations", http.StatusSeeOther)
 		return
@@ -121,16 +114,8 @@ func (h *AiHandlers) EditForm(w http.ResponseWriter, r *http.Request) {
 	if apiVersion.Valid {
 		ai.ApiVersion = apiVersion.String
 	}
-	if oauthEmail.Valid {
-		ai.OAuthEmail = oauthEmail.String
-	}
 
-	oauthErr := ""
-	if r.URL.Query().Get("error") != "" {
-		oauthErr = "OAuth login failed. Please try again."
-	}
-
-	data := h.formData(ai, true, oauthErr)
+	data := h.formData(ai, true)
 	h.tpl.Render(w, "ai-integrations/form", data)
 }
 
@@ -176,7 +161,7 @@ func (h *AiHandlers) Save(w http.ResponseWriter, r *http.Request) {
 			_, err := h.db.Exec(`
 				UPDATE ai_integrations SET name=?, provider_type=?, api_url=?, api_key=?, api_version=?,
 				       model=?, max_tokens=?, max_diff_chars_per_chunk=?, max_diff_chunks=?,
-				       retry_truncated_chunk_chars=?, extended_thinking=?, thinking_budget=?, auth_method='api_key', updated_at=?
+				       retry_truncated_chunk_chars=?, extended_thinking=?, thinking_budget=?, updated_at=?
 				WHERE id=?
 			`, name, providerType, apiURL, encKey, nullStr(apiVersion), model, maxTokens,
 				maxDiffChars, maxDiffChunks, retryChars, extThinking, thinkBudget, now, id)
@@ -198,14 +183,7 @@ func (h *AiHandlers) Save(w http.ResponseWriter, r *http.Request) {
 			slog.Error("Failed to insert AI integration", "err", err)
 		}
 
-		// For new OpenAI integrations without an API key, redirect to edit page
-		// so the user can immediately use OAuth login
-		if providerType == "openai" && apiKey == "" {
-			if newID, err := result.LastInsertId(); err == nil {
-				http.Redirect(w, r, fmt.Sprintf("/ai-integrations/%d/edit", newID), http.StatusSeeOther)
-				return
-			}
-		}
+		_ = result // suppress unused variable
 	}
 
 	http.Redirect(w, r, "/ai-integrations", http.StatusSeeOther)
@@ -223,22 +201,23 @@ func (h *AiHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ai-integrations", http.StatusSeeOther)
 }
 
-func (h *AiHandlers) formData(ai aiFormIntegration, isEdit bool, oauthErr string) *aiFormData {
+func (h *AiHandlers) formData(ai aiFormIntegration, isEdit bool) *aiFormData {
 	return &aiFormData{
-		ActiveNav:   "ai-integrations",
-		Integration: ai,
-		IsEdit:      isEdit,
-		OAuthError:  oauthErr,
-		ProviderTypes: []string{"openai", "anthropic", "ollama", "llamacpp"},
+		ActiveNav:     "ai-integrations",
+		Integration:   ai,
+		IsEdit:        isEdit,
+		ProviderTypes: []string{"codex", "gemini", "anthropic", "ollama", "llamacpp"},
 		DefaultApiUrls: map[string]string{
-			"openai":    "https://api.openai.com",
+			"codex":     "",
+			"gemini":    "",
 			"anthropic": "https://api.anthropic.com",
 			"ollama":    "http://localhost:11434",
 			"llamacpp":  "http://localhost:8000",
 		},
 		SuggestedModels: map[string][]string{
-			"openai":    {"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3-mini"},
-			"anthropic": {"claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-6"},
+			"codex":     {"gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex-mini", "gpt-5.1-codex-max"},
+			"gemini":    {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemini-3-flash-preview"},
+			"anthropic": {"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001", "claude-sonnet-4-5", "claude-opus-4-5"},
 		},
 	}
 }

@@ -26,9 +26,8 @@ func LoadTemplates(dir string) *Templates {
 	layoutFile := filepath.Join(dir, "layout.html")
 
 	standalone := map[string]string{
-		"login":        filepath.Join(dir, "login.html"),
-		"setup":        filepath.Join(dir, "setup.html"),
-		"oauth-device": filepath.Join(dir, "oauth-device.html"),
+		"login": filepath.Join(dir, "login.html"),
+		"setup": filepath.Join(dir, "setup.html"),
 	}
 	withLayout := map[string]string{
 		"dashboard":               filepath.Join(dir, "dashboard.html"),

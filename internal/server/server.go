@@ -21,7 +21,6 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 	tpl := web.LoadTemplates("web/templates")
 	handlers := web.NewHandlers(tpl, adminSvc, sm, database, enc)
 	aiHandlers := web.NewAiHandlers(tpl, database, enc)
-	oauthHandlers := web.NewOAuthHandlers(database, enc, tpl)
 	botHandlers := web.NewBotHandlers(tpl, database, enc)
 	gitHandlers := web.NewGitHandlers(tpl, database, enc)
 
@@ -70,11 +69,6 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 		r.Get("/ai-integrations/{id}/edit", aiHandlers.EditForm)
 		r.Post("/ai-integrations/save", aiHandlers.Save)
 		r.Post("/ai-integrations/{id}/delete", aiHandlers.Delete)
-
-		// OAuth for AI Integrations (device code flow)
-		r.Get("/ai-integrations/{id}/oauth", oauthHandlers.StartOAuth)
-		r.Get("/ai-integrations/{id}/oauth/poll", oauthHandlers.PollOAuth)
-		r.Post("/ai-integrations/{id}/oauth/revoke", oauthHandlers.RevokeOAuth)
 
 		// Bots CRUD
 		r.Get("/bots", botHandlers.List)

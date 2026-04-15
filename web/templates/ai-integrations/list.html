@@ -27,7 +27,6 @@
                         <th>Provider</th>
                         <th>API URL</th>
                         <th>Model</th>
-                        <th>Auth</th>
                         <th>Max Tokens</th>
                         <th>Actions</th>
                     </tr>
@@ -37,16 +36,8 @@
                     <tr>
                         <td>{{.Name}}</td>
                         <td><span class="badge bg-secondary">{{.ProviderType}}</span></td>
-                        <td>{{.ApiURL}}</td>
+                        <td>{{if .ApiURL}}{{.ApiURL}}{{else}}<span class="text-muted">CLI</span>{{end}}</td>
                         <td>{{.Model}}</td>
-                        <td>
-                            {{if eq .AuthMethod "oauth"}}
-                            <span class="badge bg-success"><i class="bi bi-shield-check"></i> OAuth</span>
-                            {{if .OAuthEmail}}<br><small class="text-muted">{{.OAuthEmail}}</small>{{end}}
-                            {{else}}
-                            <span class="badge bg-info">API Key</span>
-                            {{end}}
-                        </td>
                         <td>{{.MaxTokens}}</td>
                         <td>
                             <a href="/ai-integrations/{{.ID}}/edit" class="btn btn-sm btn-outline-primary">

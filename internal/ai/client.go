@@ -19,9 +19,10 @@ type ReviewRequest struct {
 
 // ChatOpts holds optional overrides for chat requests.
 type ChatOpts struct {
-	SystemPrompt     string
-	ModelOverride    string
+	SystemPrompt      string
+	ModelOverride     string
 	MaxTokensOverride int
+	WorkDir           string // Working directory for CLI-based providers (codex, gemini)
 }
 
 // TokenUsage reports prompt and completion token counts.
