@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd unit template for AI Git Bot (macOS user LaunchAgent).
+  Rendered by packaging/macos/install.sh — do not edit the installed
+  copy by hand; re-run install.sh instead.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tmseidel.ai-git-bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@INSTALL_DIR@/bin/run.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>@INSTALL_DIR@</string>
+
+    <!--
+      LaunchAgents start with a minimal PATH. Populate it explicitly so the
+      bot can locate CLI tools installed via Homebrew (Codex, Gemini, git,
+      node, etc.) and per-user installs under ~/.local/bin.
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>@HOME@</string>
+        <key>PATH</key>
+        <string>@HOME@/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart on crash; do not restart on clean exit (allows manual stop). -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Throttle restart attempts to avoid fork-bombing on a persistent failure. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>@LOG_DIR@/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>@LOG_DIR@/stderr.log</string>
+</dict>
+</plist>
