@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +18,9 @@ type AnthropicClient struct {
 	baseURL    string
 	apiKey     string
 	httpClient *http.Client
+	// noAutoCache is set once an endpoint rejects top-level automatic caching
+	// (some proxies and partner platforms); the system-prompt breakpoint stays on.
+	noAutoCache atomic.Bool
 }
 
 func NewAnthropicClient(baseURL, apiKey string, cfg Config) *AnthropicClient {
@@ -30,11 +34,35 @@ func (c *AnthropicClient) SupportsNativeTools() bool { return true }
 type anthRequest struct {
 	Model        string            `json:"model"`
 	MaxTokens    int               `json:"max_tokens"`
-	System       string            `json:"system,omitempty"`
+	System       []anthSystemBlock `json:"system,omitempty"`
 	Messages     []anthMsg         `json:"messages"`
 	Tools        []anthTool        `json:"tools,omitempty"`
 	Thinking     *anthThinking     `json:"thinking,omitempty"`
 	OutputConfig *anthOutputConfig `json:"output_config,omitempty"`
+	// CacheControl enables automatic caching: the API puts a breakpoint on the
+	// last cacheable block and moves it forward as the conversation grows.
+	CacheControl *anthCacheControl `json:"cache_control,omitempty"`
+}
+
+type anthCacheControl struct {
+	Type string `json:"type"` // "ephemeral"
+}
+
+type anthSystemBlock struct {
+	Type         string            `json:"type"` // "text"
+	Text         string            `json:"text"`
+	CacheControl *anthCacheControl `json:"cache_control,omitempty"`
+}
+
+// systemBlocks returns the system prompt with a cache breakpoint on it.
+// Tools render before the system prompt, so this one breakpoint caches the
+// tool definitions and the system prompt together: the stable part shared by
+// every turn of a run and by runs of the same bot.
+func systemBlocks(prompt string) []anthSystemBlock {
+	if prompt == "" {
+		return nil
+	}
+	return []anthSystemBlock{{Type: "text", Text: prompt, CacheControl: &anthCacheControl{Type: "ephemeral"}}}
 }
 
 type anthThinking struct {
@@ -75,8 +103,10 @@ type anthResponse struct {
 	Content    []anthRespBlock `json:"content"`
 	StopReason string          `json:"stop_reason"`
 	Usage      *struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
 }
 
@@ -139,19 +169,14 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, messages []Conversa
 	reqBody := anthRequest{
 		Model:     model,
 		MaxTokens: maxTokens,
-		System:    prompt,
+		System:    systemBlocks(prompt),
 		Messages:  aMsgs,
 		Tools:     aTools,
 	}
 
 	c.applyThinking(&reqBody, model)
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-
-	hr, err := c.doHTTPFull(ctx, body)
+	hr, err := c.send(ctx, &reqBody)
 	if err != nil {
 		return nil, err
 	}
@@ -173,10 +198,13 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, messages []Conversa
 	}
 	if resp.Usage != nil {
 		result.Usage = &TokenUsage{
-			PromptTokens:     resp.Usage.InputTokens,
+			PromptTokens:     resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens,
 			CompletionTokens: resp.Usage.OutputTokens,
+			CacheReadTokens:  resp.Usage.CacheReadInputTokens,
+			CacheWriteTokens: resp.Usage.CacheCreationInputTokens,
 		}
-		slog.Info("Anthropic tool response", "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens)
+		slog.Info("Anthropic tool response", "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens,
+			"cache_read_tokens", resp.Usage.CacheReadInputTokens, "cache_write_tokens", resp.Usage.CacheCreationInputTokens)
 	}
 
 	for _, block := range resp.Content {
@@ -278,12 +306,39 @@ func (c *AnthropicClient) doHTTPFull(ctx context.Context, body []byte) (*httpRes
 	return &httpResult{body: respBody, status: resp.StatusCode, headers: resp.Header}, nil
 }
 
-func (c *AnthropicClient) doHTTP(ctx context.Context, body []byte) ([]byte, int, error) {
-	r, err := c.doHTTPFull(ctx, body)
-	if err != nil {
-		return nil, 0, err
+// send marshals and posts a request with automatic caching enabled. If the
+// endpoint rejects the top-level cache_control field, the request is retried
+// once without it and automatic caching stays off for this client.
+func (c *AnthropicClient) send(ctx context.Context, req *anthRequest) (*httpResult, error) {
+	if !c.noAutoCache.Load() {
+		req.CacheControl = &anthCacheControl{Type: "ephemeral"}
 	}
-	return r.body, r.status, nil
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	hr, err := c.doHTTPFull(ctx, body)
+	if err != nil || req.CacheControl == nil || !rejectsAutoCache(hr) {
+		return hr, err
+	}
+	slog.Warn("Endpoint rejects automatic prompt caching; continuing with the system-prompt breakpoint only",
+		"base_url", c.baseURL)
+	c.noAutoCache.Store(true)
+	req.CacheControl = nil
+	if body, err = json.Marshal(req); err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	return c.doHTTPFull(ctx, body)
+}
+
+// rejectsAutoCache reports whether a 400 is about the top-level cache_control
+// field (not about a marker inside system or messages).
+func rejectsAutoCache(hr *httpResult) bool {
+	if hr.status != http.StatusBadRequest {
+		return false
+	}
+	b := string(hr.body)
+	return strings.Contains(b, "cache_control") && !strings.Contains(b, "messages.") && !strings.Contains(b, "system.")
 }
 
 // parseAnthropicRateLimitHeaders extracts usage from Anthropic-specific headers.
@@ -335,17 +390,13 @@ func parseAnthropicRateLimitHeaders(headers http.Header) *RateLimitSnapshot {
 }
 
 func (c *AnthropicClient) doSimpleRequest(ctx context.Context, model string, maxTokens int, systemPrompt string, messages []anthMsg, logContext string) (string, error) {
-	reqBody := anthRequest{Model: model, MaxTokens: maxTokens, System: systemPrompt, Messages: messages}
+	reqBody := anthRequest{Model: model, MaxTokens: maxTokens, System: systemBlocks(systemPrompt), Messages: messages}
 	c.applyThinking(&reqBody, model)
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
-	}
-
-	respBody, status, err := c.doHTTP(ctx, body)
+	hr, err := c.send(ctx, &reqBody)
 	if err != nil {
 		return "", err
 	}
+	respBody, status := hr.body, hr.status
 	if status == http.StatusTooManyRequests || status == 529 {
 		return "", parse429Response(status, respBody)
 	}
@@ -370,7 +421,8 @@ func (c *AnthropicClient) doSimpleRequest(ctx context.Context, model string, max
 
 	if resp.Usage != nil {
 		slog.Info("Anthropic response", "context", logContext,
-			"input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens)
+			"input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens,
+			"cache_read_tokens", resp.Usage.CacheReadInputTokens, "cache_write_tokens", resp.Usage.CacheCreationInputTokens)
 	}
 
 	return text, nil

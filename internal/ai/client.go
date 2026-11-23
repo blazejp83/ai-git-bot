@@ -29,6 +29,8 @@ type ChatOpts struct {
 type TokenUsage struct {
 	PromptTokens     int
 	CompletionTokens int
+	CacheReadTokens  int // prompt tokens served from the provider's cache
+	CacheWriteTokens int // prompt tokens written to the provider's cache
 }
 
 // Client is the provider-agnostic interface for AI-powered code review and chat.

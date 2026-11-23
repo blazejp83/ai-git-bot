@@ -71,3 +71,67 @@ func TestAnthropicLegacyThinkingModel(t *testing.T) {
 		t.Errorf("legacy thinking = %+v max=%d", req.Thinking, req.MaxTokens)
 	}
 }
+
+func TestAnthropicPromptCaching(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		json.Unmarshal(raw, &m)
+		bodies = append(bodies, m)
+		io.WriteString(w, `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn",
+			"usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":900,"cache_creation_input_tokens":50}}`)
+	}))
+	defer srv.Close()
+
+	c := NewAnthropicClient(srv.URL, "k", Config{Model: "claude-opus-5-5", MaxTokens: 1000})
+	resp, err := c.ChatWithTools(context.Background(), []ConversationMessage{{Role: "user", Content: "hi"}}, nil, ChatOpts{SystemPrompt: "You are a reviewer."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := bodies[0]
+	if cc, _ := b["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
+		t.Errorf("top-level automatic caching missing: %v", b["cache_control"])
+	}
+	sys, _ := b["system"].([]any)
+	if len(sys) != 1 {
+		t.Fatalf("system = %v", b["system"])
+	}
+	blk := sys[0].(map[string]any)
+	if blk["text"] != "You are a reviewer." || blk["cache_control"].(map[string]any)["type"] != "ephemeral" {
+		t.Errorf("system block = %v", blk)
+	}
+	u := resp.Usage
+	if u.CacheReadTokens != 900 || u.CacheWriteTokens != 50 || u.PromptTokens != 960 {
+		t.Errorf("usage = %+v", u)
+	}
+}
+
+func TestAnthropicAutoCacheFallback(t *testing.T) {
+	var withTopLevel, calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		raw, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		json.Unmarshal(raw, &m)
+		if _, ok := m["cache_control"]; ok {
+			withTopLevel++
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"cache_control: Extra inputs are not permitted"}}`)
+			return
+		}
+		io.WriteString(w, `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`)
+	}))
+	defer srv.Close()
+
+	c := NewAnthropicClient(srv.URL, "k", Config{Model: "claude-opus-5-5", MaxTokens: 1000})
+	for i := 0; i < 2; i++ {
+		out, err := c.Chat(context.Background(), nil, "hi", ChatOpts{SystemPrompt: "s"})
+		if err != nil || out != "ok" {
+			t.Fatalf("call %d: %q %v", i, out, err)
+		}
+	}
+	if withTopLevel != 1 || calls != 3 {
+		t.Errorf("top-level attempts = %d, calls = %d; want 1 and 3 (one retry, then stays off)", withTopLevel, calls)
+	}
+}
