@@ -13,7 +13,7 @@ type Mode string
 
 const (
 	ModeReview         Mode = "review"         // read-only tools, output = comment
-	ModeImplementation Mode = "implementation"  // read+write tools, output = PR
+	ModeImplementation Mode = "implementation" // read+write tools, output = PR
 )
 
 // Config holds runner configuration.
@@ -185,6 +185,7 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 			Role:      "assistant",
 			Content:   text,
 			ToolCalls: response.ToolCalls(),
+			Thinking:  response.ThinkingBlocks(),
 		}
 		toolResultMsg := ai.ConversationMessage{
 			Role:        "user",

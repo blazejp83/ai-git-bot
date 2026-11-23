@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -27,17 +28,22 @@ func (c *AnthropicClient) SupportsNativeTools() bool { return true }
 // --- Wire types ---
 
 type anthRequest struct {
-	Model     string         `json:"model"`
-	MaxTokens int            `json:"max_tokens"`
-	System    string         `json:"system,omitempty"`
-	Messages  []anthMsg      `json:"messages"`
-	Tools     []anthTool     `json:"tools,omitempty"`
-	Thinking  *anthThinking  `json:"thinking,omitempty"`
+	Model        string            `json:"model"`
+	MaxTokens    int               `json:"max_tokens"`
+	System       string            `json:"system,omitempty"`
+	Messages     []anthMsg         `json:"messages"`
+	Tools        []anthTool        `json:"tools,omitempty"`
+	Thinking     *anthThinking     `json:"thinking,omitempty"`
+	OutputConfig *anthOutputConfig `json:"output_config,omitempty"`
 }
 
 type anthThinking struct {
-	Type         string `json:"type"`          // "enabled"
-	BudgetTokens int    `json:"budget_tokens"` // max tokens for thinking
+	Type         string `json:"type"`                    // "adaptive" (current models) or "enabled" (legacy)
+	BudgetTokens int    `json:"budget_tokens,omitempty"` // legacy models only
+}
+
+type anthOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type anthMsg struct {
@@ -46,14 +52,17 @@ type anthMsg struct {
 }
 
 type anthContentBlock struct {
-	Type       string         `json:"type"`                  // text, tool_use, tool_result
-	Text       string         `json:"text,omitempty"`        // type=text
-	ID         string         `json:"id,omitempty"`          // type=tool_use
-	Name       string         `json:"name,omitempty"`        // type=tool_use
-	Input      map[string]any `json:"input,omitempty"`       // type=tool_use
-	ToolUseID  string         `json:"tool_use_id,omitempty"` // type=tool_result
-	Content    string         `json:"content,omitempty"`     // type=tool_result (can also be array, but we use string)
-	IsError    bool           `json:"is_error,omitempty"`    // type=tool_result
+	Type      string  `json:"type"`                  // text, tool_use, tool_result, thinking, redacted_thinking
+	Text      string  `json:"text,omitempty"`        // type=text
+	ID        string  `json:"id,omitempty"`          // type=tool_use
+	Name      string  `json:"name,omitempty"`        // type=tool_use
+	Input     any     `json:"input,omitempty"`       // type=tool_use (always a non-nil map so it is never omitted)
+	Thinking  *string `json:"thinking,omitempty"`    // type=thinking (may be empty string, must be sent)
+	Signature string  `json:"signature,omitempty"`   // type=thinking
+	Data      string  `json:"data,omitempty"`        // type=redacted_thinking
+	ToolUseID string  `json:"tool_use_id,omitempty"` // type=tool_result
+	Content   string  `json:"content,omitempty"`     // type=tool_result (can also be array, but we use string)
+	IsError   bool    `json:"is_error,omitempty"`    // type=tool_result
 }
 
 type anthTool struct {
@@ -72,11 +81,14 @@ type anthResponse struct {
 }
 
 type anthRespBlock struct {
-	Type  string         `json:"type"`
-	Text  string         `json:"text,omitempty"`
-	ID    string         `json:"id,omitempty"`
-	Name  string         `json:"name,omitempty"`
-	Input map[string]any `json:"input,omitempty"`
+	Type      string         `json:"type"`
+	Text      string         `json:"text,omitempty"`
+	Thinking  string         `json:"thinking,omitempty"`
+	Signature string         `json:"signature,omitempty"`
+	Data      string         `json:"data,omitempty"`
+	ID        string         `json:"id,omitempty"`
+	Name      string         `json:"name,omitempty"`
+	Input     map[string]any `json:"input,omitempty"`
 }
 
 // --- Existing methods ---
@@ -132,14 +144,7 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, messages []Conversa
 		Tools:     aTools,
 	}
 
-	// Enable extended thinking if configured
-	if c.cfg.ExtendedThinking && c.cfg.ThinkingBudget > 0 {
-		reqBody.Thinking = &anthThinking{
-			Type:         "enabled",
-			BudgetTokens: c.cfg.ThinkingBudget,
-		}
-		slog.Info("Extended thinking enabled", "budget_tokens", c.cfg.ThinkingBudget)
-	}
+	c.applyThinking(&reqBody, model)
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -178,6 +183,16 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, messages []Conversa
 		switch block.Type {
 		case "text":
 			result.Content = append(result.Content, ContentBlock{Type: "text", Text: block.Text})
+		case "thinking", "redacted_thinking":
+			result.Content = append(result.Content, ContentBlock{
+				Type: "thinking",
+				Thinking: &ThinkingBlock{
+					Type:      block.Type,
+					Thinking:  block.Thinking,
+					Signature: block.Signature,
+					Data:      block.Data,
+				},
+			})
 		case "tool_use":
 			raw, _ := json.Marshal(block.Input)
 			result.Content = append(result.Content, ContentBlock{
@@ -213,17 +228,29 @@ func convToAnth(m ConversationMessage) []anthMsg {
 		return []anthMsg{{Role: "user", Content: blocks}}
 
 	case len(m.ToolCalls) > 0:
-		// Assistant with tool calls
+		// Assistant with tool calls. Thinking blocks go first, unchanged.
 		var blocks []anthContentBlock
+		for _, tb := range m.Thinking {
+			b := anthContentBlock{Type: tb.Type, Signature: tb.Signature, Data: tb.Data}
+			if tb.Type == "thinking" {
+				t := tb.Thinking
+				b.Thinking = &t
+			}
+			blocks = append(blocks, b)
+		}
 		if m.Content != "" {
 			blocks = append(blocks, anthContentBlock{Type: "text", Text: m.Content})
 		}
 		for _, tc := range m.ToolCalls {
+			var input any = tc.Input
+			if tc.Input == nil {
+				input = map[string]any{}
+			}
 			blocks = append(blocks, anthContentBlock{
 				Type:  "tool_use",
 				ID:    tc.ID,
 				Name:  tc.Name,
-				Input: tc.Input,
+				Input: input,
 			})
 		}
 		return []anthMsg{{Role: "assistant", Content: blocks}}
@@ -309,6 +336,7 @@ func parseAnthropicRateLimitHeaders(headers http.Header) *RateLimitSnapshot {
 
 func (c *AnthropicClient) doSimpleRequest(ctx context.Context, model string, maxTokens int, systemPrompt string, messages []anthMsg, logContext string) (string, error) {
 	reqBody := anthRequest{Model: model, MaxTokens: maxTokens, System: systemPrompt, Messages: messages}
+	c.applyThinking(&reqBody, model)
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
@@ -318,7 +346,7 @@ func (c *AnthropicClient) doSimpleRequest(ctx context.Context, model string, max
 	if err != nil {
 		return "", err
 	}
-	if status == http.StatusTooManyRequests {
+	if status == http.StatusTooManyRequests || status == 529 {
 		return "", parse429Response(status, respBody)
 	}
 	if status != http.StatusOK {
@@ -346,4 +374,48 @@ func (c *AnthropicClient) doSimpleRequest(ctx context.Context, model string, max
 	}
 
 	return text, nil
+}
+
+// applyThinking sets the thinking/effort configuration for the request.
+//
+// Current Claude models (4.6 and later, including the 5.x family) use adaptive
+// thinking and reject the legacy {type:"enabled", budget_tokens:N} form with a
+// 400. On those models "Extended Thinking" maps to adaptive thinking at high
+// effort; otherwise the model's defaults apply. Legacy models (4.5 and older)
+// keep the budget_tokens form.
+func (c *AnthropicClient) applyThinking(req *anthRequest, model string) {
+	if !c.cfg.ExtendedThinking {
+		return
+	}
+	if isLegacyThinkingModel(model) {
+		budget := c.cfg.ThinkingBudget
+		if budget < 1024 {
+			return
+		}
+		if budget >= req.MaxTokens {
+			// budget_tokens must be < max_tokens; give the answer room too.
+			req.MaxTokens = budget + 4096
+		}
+		req.Thinking = &anthThinking{Type: "enabled", BudgetTokens: budget}
+		slog.Debug("Extended thinking enabled (budget)", "model", model, "budget_tokens", budget)
+		return
+	}
+	req.Thinking = &anthThinking{Type: "adaptive"}
+	req.OutputConfig = &anthOutputConfig{Effort: "high"}
+	slog.Debug("Extended thinking enabled (adaptive)", "model", model, "effort", "high")
+}
+
+// isLegacyThinkingModel reports whether the model predates adaptive thinking
+// and still requires budget_tokens (Claude 3.x and Claude 4.0/4.1/4.5).
+func isLegacyThinkingModel(model string) bool {
+	m := strings.ToLower(model)
+	if strings.HasPrefix(m, "claude-3") {
+		return true
+	}
+	for _, v := range []string{"-4-5", "-4-1", "-4-0", "-4-2025"} {
+		if strings.Contains(m, v) {
+			return true
+		}
+	}
+	return false
 }

@@ -217,7 +217,7 @@ func (h *AiHandlers) formData(ai aiFormIntegration, isEdit bool) *aiFormData {
 		SuggestedModels: map[string][]string{
 			"codex":     {"gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex-mini", "gpt-5.1-codex-max"},
 			"gemini":    {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemini-3-flash-preview"},
-			"anthropic": {"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001", "claude-sonnet-4-5", "claude-opus-4-5"},
+			"anthropic": {"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2", "claude-opus-4-8"},
 		},
 	}
 }

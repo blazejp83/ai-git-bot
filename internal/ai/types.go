@@ -15,9 +15,20 @@ type ToolDef struct {
 
 // ContentBlock represents one block in a structured AI response.
 type ContentBlock struct {
-	Type     string    // "text" or "tool_use"
-	Text     string    // populated when Type == "text"
-	ToolCall *ToolCall // populated when Type == "tool_use"
+	Type     string         // "text", "tool_use" or "thinking"
+	Text     string         // populated when Type == "text"
+	ToolCall *ToolCall      // populated when Type == "tool_use"
+	Thinking *ThinkingBlock // populated when Type == "thinking"
+}
+
+// ThinkingBlock is an opaque provider reasoning block (Anthropic thinking /
+// redacted_thinking). It must be passed back unchanged on the next request
+// of a tool-use loop.
+type ThinkingBlock struct {
+	Type      string // "thinking" or "redacted_thinking"
+	Thinking  string
+	Signature string
+	Data      string // redacted_thinking payload
 }
 
 // ToolCall represents the AI requesting a tool invocation.
@@ -43,6 +54,7 @@ type ConversationMessage struct {
 	Content     string              // text content
 	ToolCalls   []ToolCall          // assistant tool calls (when role == "assistant")
 	ToolResults []ToolResultMessage // tool results (appended as user message for Anthropic)
+	Thinking    []ThinkingBlock     // provider reasoning blocks to replay (assistant only)
 }
 
 // ChatResponse is the structured return from ChatWithTools.
@@ -83,6 +95,17 @@ func (r *ChatResponse) ToolCalls() []ToolCall {
 	return calls
 }
 
+// ThinkingBlocks returns all reasoning blocks, in order.
+func (r *ChatResponse) ThinkingBlocks() []ThinkingBlock {
+	var out []ThinkingBlock
+	for _, b := range r.Content {
+		if b.Type == "thinking" && b.Thinking != nil {
+			out = append(out, *b.Thinking)
+		}
+	}
+	return out
+}
+
 // HasToolCalls returns true if the response contains any tool_use blocks.
 func (r *ChatResponse) HasToolCalls() bool {
 	for _, b := range r.Content {
@@ -108,10 +131,10 @@ func (e *RateLimitError) Error() string {
 // (e.g. ChatGPT Plus 5-hour limit). This is NOT retryable with backoff —
 // the agent must stop and inform the user when the limit resets.
 type UsageLimitError struct {
-	ErrorType  string    // "usage_limit_reached", "insufficient_quota", "usage_not_included"
-	Message    string    // human-readable message
-	ResetsAt   time.Time // when the limit resets (zero if unknown)
-	PlanType   string    // "free", "plus", "pro", "team", etc.
+	ErrorType string    // "usage_limit_reached", "insufficient_quota", "usage_not_included"
+	Message   string    // human-readable message
+	ResetsAt  time.Time // when the limit resets (zero if unknown)
+	PlanType  string    // "free", "plus", "pro", "team", etc.
 }
 
 func (e *UsageLimitError) Error() string {
