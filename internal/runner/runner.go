@@ -24,7 +24,8 @@ type Config struct {
 	ModelOverride  string
 	MaxTokens      int
 	ShellAllowlist []string
-	ShellTimeout   int // seconds
+	ShellTimeout   int    // seconds
+	PRDiff         string // unified diff of the pull request; enables the pr_diff tool
 }
 
 // RunStatus indicates how the runner finished.
@@ -59,7 +60,7 @@ func New(aiClient ai.Client, workspace *Workspace, reporter ProgressReporter, se
 	if shellTimeout == 0 {
 		shellTimeout = 300
 	}
-	tools := NewToolRegistry(cfg.Mode, cfg.ShellAllowlist, time.Duration(shellTimeout)*time.Second)
+	tools := NewToolRegistry(cfg.Mode, cfg.ShellAllowlist, time.Duration(shellTimeout)*time.Second, cfg.PRDiff)
 
 	return &Runner{
 		aiClient:  aiClient,
@@ -83,6 +84,7 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 	}
 
 	toolDefs := r.tools.GetToolDefs()
+	task := initialPromptOf(messages, initialPrompt)
 
 	warnedAt75 := false
 	warnedAt90 := false
@@ -98,6 +100,12 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 				Content: "[SYSTEM] You are about to run out of API budget. Complete your current task immediately and call the done tool with your result. Do not start new explorations.",
 			})
 			r.session.SaveMessage("user", "text", "[SYSTEM] Budget urgent — wrapping up", "", "", "")
+		}
+
+		// Keep the context bounded on long runs
+		if compacted, ok := compactMessages(messages, r.config.Mode, task); ok {
+			slog.Info("Compacted runner context", "before", len(messages), "after", len(compacted))
+			messages = compacted
 		}
 
 		// Call AI with backoff
@@ -146,6 +154,16 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 				resultText, _ := tc.Input["result"].(string)
 				if resultText == "" {
 					resultText = text
+				}
+				// Answer every call of this round, so the stored conversation never
+				// ends on tool calls without results: a later run replaying it would
+				// otherwise see an announced action without its outcome.
+				for _, other := range response.ToolCalls() {
+					content := "not executed — the run ended with the done tool"
+					if other.ID == tc.ID {
+						content = "Accepted."
+					}
+					r.session.SaveMessage("user", "tool_result", content, other.ID, other.Name, marshalInput(other.Input))
 				}
 				r.session.IncrementTurns(turn + 1)
 				result := RunResult{Text: resultText, Status: StatusComplete, TurnCount: turn + 1}

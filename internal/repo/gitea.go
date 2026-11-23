@@ -11,6 +11,7 @@ import (
 type GiteaClient struct {
 	creds  Credentials
 	http   *http.Client
+	account accountCache
 }
 
 func NewGiteaClient(creds Credentials) *GiteaClient {

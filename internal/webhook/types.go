@@ -14,6 +14,8 @@ type Event struct {
 }
 
 type User struct {
+	ID    string // immutable account id (numeric id; account_id on Bitbucket)
+	UUID  string // Bitbucket only
 	Login string
 }
 
@@ -34,6 +36,8 @@ type PullRequest struct {
 	Head   Ref
 	Base   Ref
 	Author string // PR author login
+
+	HeadRepo string // "owner/name" of the repository holding the head branch ("" when unknown)
 }
 
 type Ref struct {
@@ -54,6 +58,8 @@ type Comment struct {
 	ID                  int64
 	Body                string
 	User                string
+	UserID              string // immutable account id of the comment author
+	UserUUID            string // Bitbucket only
 	Path                string // for inline comments
 	Line                int    // for inline comments
 	PullRequestReviewID int64

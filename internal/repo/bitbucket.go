@@ -13,6 +13,7 @@ import (
 type BitbucketClient struct {
 	creds Credentials
 	http  *http.Client
+	account accountCache
 }
 
 func NewBitbucketClient(creds Credentials) *BitbucketClient {

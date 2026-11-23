@@ -61,6 +61,9 @@ func ParseGitLab(eventType string, body []byte) (*Event, error) {
 			Head:   Ref{RefName: str(attrs, "source_branch"), SHA: headSHA},
 			Base:   Ref{RefName: str(attrs, "target_branch")},
 		}
+		if src, ok := attrs["source"].(map[string]any); ok {
+			ev.PullRequest.HeadRepo = str(src, "path_with_namespace")
+		}
 
 	case "Note Hook":
 		attrs, _ := raw["object_attributes"].(map[string]any)
@@ -73,11 +76,19 @@ func ParseGitLab(eventType string, body []byte) (*Event, error) {
 		if author, ok := attrs["author"].(map[string]any); ok {
 			commentUser = str(author, "username")
 		}
+		if commentUser == "" {
+			commentUser = ev.Sender.Login // a Note Hook's user is the note's author
+		}
+		commentUserID := idStr(attrs, "author_id")
+		if commentUserID == "" {
+			commentUserID = ev.Sender.ID
+		}
 
 		ev.Comment = &Comment{
-			ID:   int64n(attrs, "id"),
-			Body: str(attrs, "note"),
-			User: commentUser,
+			ID:     int64n(attrs, "id"),
+			Body:   str(attrs, "note"),
+			User:   commentUser,
+			UserID: commentUserID,
 		}
 
 		// Inline comment position

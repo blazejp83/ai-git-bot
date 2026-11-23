@@ -27,6 +27,7 @@ type WebhookHandler struct {
 	aiFactory     *ai.ClientFactory
 	repoFactory   *repo.ClientFactory
 	promptService *prompt.Service
+	debouncer     *reviewDebouncer
 }
 
 func NewWebhookHandler(db *sql.DB, enc *encrypt.Service, promptSvc *prompt.Service, cfg *config.Config) *WebhookHandler {
@@ -37,6 +38,7 @@ func NewWebhookHandler(db *sql.DB, enc *encrypt.Service, promptSvc *prompt.Servi
 		aiFactory:     ai.NewClientFactory(enc),
 		repoFactory:   repo.NewClientFactory(enc),
 		promptService: promptSvc,
+		debouncer:     newReviewDebouncer(),
 	}
 }
 
@@ -93,14 +95,44 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	h.db.Exec("UPDATE bots SET webhook_call_count = webhook_call_count + 1, last_webhook_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?", botID)
 
-	if isBotUser(botUsername, event) {
+	// Event types the bot does not act on (pushes, pipelines, ...) stop here, so
+	// they never cost an account lookup or record an error.
+	if !handledActions[event.Action] {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ignored_event"})
+		return
+	}
+
+	// Closing a pull request ends its debounce window, also when the bot closed it.
+	if event.Action == "closed" && event.PullRequest != nil {
+		h.debouncer.forget(debounceKey(botID, event.Repo.FullName, event.PullRequest.Number))
+	}
+
+	repoClient, err := h.repoFactory.GetClient(h.db, gitIntegrationID)
+	if err != nil {
+		slog.Error("Failed to get repo client", "err", err)
+		h.recordError(botID, "Failed to get repo client: "+err.Error())
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ignored"})
+		return
+	}
+	identity, err := resolveBotIdentity(r.Context(), repoClient, botUsername)
+	if err != nil {
+		// Without knowing who the bot is it could answer itself, so ignore the event.
+		slog.Error("Ignoring webhook: bot account unknown", "bot", botName, "err", err)
+		h.recordError(botID, err.Error())
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ignored_unresolved_bot"})
+		return
+	}
+	if identity.fromBot(event) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ignored_self"})
 		return
 	}
 
 	bs := botSettings{
-		id: botID, name: botName, username: botUsername,
+		id: botID, name: botName, username: botUsername, identity: identity,
 		aiIntID: aiIntegrationID, gitIntID: gitIntegrationID,
 		agentEnabled: agentEnabled,
 	}
@@ -128,17 +160,23 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
+// handledActions are the event actions dispatch acts on.
+var handledActions = map[string]bool{
+	"opened": true, "synchronized": true, "created": true, "reviewed": true, "assigned": true, "closed": true,
+}
+
 type botSettings struct {
-	id              int64
-	name            string
-	username        string
-	aiIntID         int64
-	gitIntID        int64
-	agentEnabled    bool
-	systemPrompt    string   // resolved prompt text (not a file name)
-	maxTurnsReview  int      // 0 = use global default
-	maxTurnsImpl    int      // 0 = use global default
-	shellAllowlist  []string // nil = use global default
+	id             int64
+	name           string
+	username       string
+	identity       botIdentity
+	aiIntID        int64
+	gitIntID       int64
+	agentEnabled   bool
+	systemPrompt   string   // resolved prompt text (not a file name)
+	maxTurnsReview int      // 0 = use global default
+	maxTurnsImpl   int      // 0 = use global default
+	shellAllowlist []string // nil = use global default
 }
 
 func (bs botSettings) resolveShellAllowlist() []string {
@@ -185,8 +223,7 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 
 	promptText := bs.systemPrompt
 
-	botAlias := "@" + bs.username
-	hasBotMention := event.Comment != nil && strings.Contains(event.Comment.Body, botAlias)
+	hasBotMention := event.Comment != nil && bs.identity.mentioned(event.Comment.Body)
 
 	owner := event.Repo.Owner
 	repoName := event.Repo.Name
@@ -195,7 +232,17 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 	switch event.Action {
 	case "opened", "synchronized":
 		if event.PullRequest != nil {
-			h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID)
+			// One user action can fire several trigger events for the same commit;
+			// only the first starts a review.
+			key := debounceKey(bs.id, event.Repo.FullName, event.PullRequest.Number)
+			sha := event.PullRequest.Head.SHA
+			if !h.debouncer.tryClaim(key, sha) {
+				slog.Info("Review already triggered for this commit; skipping", "pr", event.PullRequest.Number, "sha", sha)
+				return
+			}
+			if !h.runReview(ctx, aiClient, repoClient, owner, repoName, event.PullRequest.Number, event.PullRequest, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID) {
+				h.debouncer.release(key, sha)
+			}
 		}
 
 	case "created":
@@ -213,11 +260,14 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 
 				body := event.Comment.Body
 				trigger := extractTrigger(body)
+				if trigger == "" && isReviewAgainRequest(bs.identity.stripMentions(body)) {
+					trigger = "review"
+				}
 
 				switch trigger {
 				case "review", "fullreview":
 					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
-					h.runReview(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID)
+					h.runReview(ctx, aiClient, repoClient, owner, repoName, prNum, event.PullRequest, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID)
 				case "investigate", "explore", "deep":
 					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
 					h.runAgenticFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, body, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID, commenter, prAuthor)
@@ -245,42 +295,38 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 	}
 }
 
-func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int, shellAllowlist []string, gitIntID int64) {
-	pr := event.PullRequest
+// runReview reviews a pull request and reports whether a review ran (false when
+// it was skipped or failed, so the debounce claim can be given back).
+// pr may be nil (e.g. a review requested from a GitHub issue comment); the
+// prompt then has no title or description, and the base branch is the default branch.
+func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, pr *webhook.PullRequest, promptText string, maxTurns int, shellAllowlist []string, gitIntID int64) bool {
+	title, body, baseBranch := "", "", ""
+	if pr != nil {
+		title, body, baseBranch = pr.Title, pr.Body, pr.Base.RefName
+	}
 
 	// Fetch diff for the initial prompt
-	diff, err := repoClient.GetPRDiff(ctx, owner, repoName, pr.Number)
+	diff, err := repoClient.GetPRDiff(ctx, owner, repoName, prNum)
 	if err != nil || diff == "" {
-		slog.Warn("No diff found for PR", "pr", pr.Number, "err", err)
-		return
+		slog.Warn("No diff found for PR", "pr", prNum, "err", err)
+		return false
 	}
 
-	// Get or clone the repo for the agent to explore
-	baseBranch := pr.Base.RefName
-	if baseBranch == "" {
-		baseBranch = "main"
-	}
-
-	// Build clone URL from credentials
-	cloneURL := h.cloneURL(gitIntID, event.Repo.Owner, event.Repo.Name)
-
-	ws, err := runner.NewWorkspace(ctx, cloneURL, owner, repoName, baseBranch)
+	ws, reviewedSHA, onHead, err := h.prepareReviewWorkspace(ctx, repoClient, gitIntID, owner, repoName, prNum, baseBranch)
 	if err != nil {
 		slog.Error("Failed to create workspace for review", "err", err)
-		// Fallback: do review without workspace exploration
-		// (the AI just gets the diff, no tool calling)
-		return
+		return false
 	}
 	defer ws.Cleanup()
 
-	session, err := runner.CreateSession(h.db, runner.ModeReview, owner, repoName, pr.Number, "pr", promptText)
+	session, err := runner.CreateSession(h.db, runner.ModeReview, owner, repoName, prNum, "pr", promptText)
 	if err != nil {
 		slog.Error("Failed to create runner session", "err", err)
-		return
+		return false
 	}
 
 	reporter := &runner.CommentReporter{
-		RepoClient: repoClient, Owner: owner, Repo: repoName, Number: pr.Number,
+		RepoClient: repoClient, Owner: owner, Repo: repoName, Number: prNum,
 	}
 
 	initialPrompt := fmt.Sprintf(`Review this pull request.
@@ -291,9 +337,11 @@ func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repo
 **Diff**:
 `+"```diff\n%s\n```"+`
 
+%s
 Explore the repository to understand the context of the changes.
 Read related files, check for test coverage, look for potential issues.
-When you're done, call the "done" tool with your review as markdown.`, pr.Title, pr.Body, truncate(diff, 60000))
+To see the diff hunks of changed files with line numbers, call the "pr_diff" tool with up to 8 file paths.
+When you're done, call the "done" tool with your review as markdown.`, title, body, truncateDiff(diff, 60000), workspaceNote(onHead))
 
 	r := runner.New(aiClient, ws, reporter, session, runner.Config{
 		Mode:           runner.ModeReview,
@@ -302,22 +350,96 @@ When you're done, call the "done" tool with your review as markdown.`, pr.Title,
 		MaxTokens:      h.cfg.AgentMaxTokens,
 		ShellAllowlist: shellAllowlist,
 		ShellTimeout:   60,
+		PRDiff:         diff,
 	})
 
 	result, err := r.Run(ctx, initialPrompt)
 	if err != nil {
 		slog.Error("Review runner failed", "err", err)
 		h.recordError(0, "Review failed: "+err.Error())
-		return
+		session.SetStatus("FAILED")
+		return false
+	}
+
+	// Don't publish a review of a commit the pull request no longer points at:
+	// the push that replaced it triggers its own review.
+	if live, err := repoClient.GetPRHead(ctx, owner, repoName, prNum); err == nil &&
+		live.SHA != "" && reviewedSHA != "" && live.SHA != reviewedSHA {
+		slog.Info("PR head moved during review; not publishing", "pr", prNum, "reviewed", reviewedSHA, "live", live.SHA)
+		session.SetStatus("STALE")
+		return true
 	}
 
 	if result.Text != "" {
 		comment := "## AI Code Review\n\n" + result.Text + "\n\n---\n*Automated review by AI Git Bot*"
-		repoClient.PostReviewComment(ctx, owner, repoName, pr.Number, comment)
+		repoClient.PostReviewComment(ctx, owner, repoName, prNum, comment)
 	}
 
 	session.SetStatus("COMPLETED")
-	slog.Info("Review completed", "pr", pr.Number, "turns", result.TurnCount)
+	slog.Info("Review completed", "pr", prNum, "turns", result.TurnCount)
+	return true
+}
+
+// prepareReviewWorkspace clones the target repository and checks out the pull
+// request's head, which also works for pull requests from forks: through the
+// provider's PR ref (GitHub, Gitea, GitLab) or the source repository's branch
+// (Bitbucket). If the head cannot be checked out, the workspace stays on the
+// base branch and onHead is false. reviewedSHA is the commit under review.
+func (h *WebhookHandler) prepareReviewWorkspace(ctx context.Context, repoClient repo.Client, gitIntID int64, owner, repoName string, prNum int64, baseBranch string) (ws *runner.Workspace, reviewedSHA string, onHead bool, err error) {
+	head, headErr := repoClient.GetPRHead(ctx, owner, repoName, prNum)
+	if headErr != nil {
+		slog.Warn("Cannot read PR head", "pr", prNum, "err", headErr)
+	}
+	if baseBranch == "" {
+		baseBranch, _ = repoClient.GetDefaultBranch(ctx, owner, repoName)
+	}
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	ws, err = runner.NewWorkspace(ctx, h.cloneURL(gitIntID, owner, repoName), owner, repoName, baseBranch)
+	if err != nil {
+		return nil, "", false, err
+	}
+	reviewedSHA = head.SHA
+	if headErr != nil {
+		return ws, reviewedSHA, false, nil
+	}
+
+	remote, ref := "origin", head.Ref
+	if ref == "" && head.Branch != "" {
+		ref = "refs/heads/" + head.Branch
+		if head.SourceRepo != "" && !strings.EqualFold(head.SourceRepo, owner+"/"+repoName) {
+			if src := strings.SplitN(head.SourceRepo, "/", 2); len(src) == 2 {
+				remote = h.cloneURL(gitIntID, src[0], src[1])
+			}
+		}
+	}
+	if ref == "" {
+		return ws, reviewedSHA, false, nil
+	}
+	sha, err := ws.CheckoutRef(ctx, remote, ref)
+	if err != nil {
+		slog.Warn("Cannot check out PR head; reviewing with the base branch checked out", "pr", prNum, "err", err)
+		return ws, reviewedSHA, false, nil
+	}
+	return ws, sha, true, nil
+}
+
+func workspaceNote(onHead bool) string {
+	if onHead {
+		return "The workspace has the pull request's head commit checked out."
+	}
+	return "Note: the pull request's head could not be checked out, so the workspace contains the BASE branch without these changes. Rely on the diff (and the pr_diff tool) for the changed code."
+}
+
+// truncateDiff shortens a diff for the initial prompt, pointing the model at
+// the pr_diff tool for the rest.
+func truncateDiff(diff string, maxLen int) string {
+	if len(diff) <= maxLen {
+		return diff
+	}
+	return diff[:maxLen] + "\n...(diff truncated; call pr_diff with the remaining file paths to see them)"
 }
 
 func (h *WebhookHandler) runReviewFollowup(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, commentBody, promptText, commenter, prAuthor string) {
@@ -487,17 +609,7 @@ When you're done, call the "done" tool with a summary of your changes.`, issue.T
 func (h *WebhookHandler) runAgenticFollowup(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, commentBody, promptText string, maxTurns int, shellAllowlist []string, gitIntID int64, commenter, prAuthor string) {
 	diff, _ := repoClient.GetPRDiff(ctx, owner, repoName, prNum)
 
-	baseBranch := "main"
-	if pr := findPREvent(nil); pr != nil {
-		baseBranch = pr.Base.RefName
-	}
-	// Try to get default branch
-	if b, err := repoClient.GetDefaultBranch(ctx, owner, repoName); err == nil && b != "" {
-		baseBranch = b
-	}
-
-	cloneURL := h.cloneURL(gitIntID, owner, repoName)
-	ws, err := runner.NewWorkspace(ctx, cloneURL, owner, repoName, baseBranch)
+	ws, _, onHead, err := h.prepareReviewWorkspace(ctx, repoClient, gitIntID, owner, repoName, prNum, "")
 	if err != nil {
 		slog.Error("Failed to create workspace for agentic follow-up", "err", err)
 		// Fall back to simple chat
@@ -526,8 +638,9 @@ func (h *WebhookHandler) runAgenticFollowup(ctx context.Context, aiClient ai.Cli
 `, owner, repoName, cleanBody)
 
 	if diff != "" {
-		initialPrompt += fmt.Sprintf("Here is the PR diff:\n```diff\n%s\n```\n\n", truncate(diff, 60000))
+		initialPrompt += fmt.Sprintf("Here is the PR diff:\n```diff\n%s\n```\n\n", truncateDiff(diff, 60000))
 	}
+	initialPrompt += workspaceNote(onHead) + "\n"
 
 	initialPrompt += `Explore the repository to understand the context. Read related files, search for symbols, check tests.
 When you have a thorough answer, call the "done" tool with your response.`
@@ -539,6 +652,7 @@ When you have a thorough answer, call the "done" tool with your response.`
 		MaxTokens:      h.cfg.AgentMaxTokens,
 		ShellAllowlist: shellAllowlist,
 		ShellTimeout:   60,
+		PRDiff:         diff,
 	})
 
 	result, err := r.Run(ctx, initialPrompt)
@@ -586,28 +700,10 @@ func stripTrigger(body string) string {
 	return strings.TrimSpace(result)
 }
 
-func findPREvent(event *webhook.Event) *webhook.PullRequest {
-	if event != nil && event.PullRequest != nil {
-		return event.PullRequest
-	}
-	return nil
-}
-
 func (h *WebhookHandler) recordError(botID int64, msg string) {
 	if botID > 0 {
 		h.db.Exec("UPDATE bots SET last_error_message = ?, last_error_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?", msg, botID)
 	}
-}
-
-func isBotUser(botUsername string, event *webhook.Event) bool {
-	bot := strings.ToLower(botUsername)
-	if strings.ToLower(event.Sender.Login) == bot {
-		return true
-	}
-	if event.Comment != nil && strings.ToLower(event.Comment.User) == bot {
-		return true
-	}
-	return false
 }
 
 func resolvePRNumber(event *webhook.Event) int64 {

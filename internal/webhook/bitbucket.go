@@ -53,6 +53,9 @@ func ParseBitbucket(eventKey string, body []byte) (*Event, error) {
 			if commit, ok := source["commit"].(map[string]any); ok {
 				ev.PullRequest.Head.SHA = str(commit, "hash")
 			}
+			if repo, ok := source["repository"].(map[string]any); ok {
+				ev.PullRequest.HeadRepo = str(repo, "full_name")
+			}
 		}
 		if dest, ok := pr["destination"].(map[string]any); ok {
 			if branch, ok := dest["branch"].(map[string]any); ok {
@@ -83,10 +86,13 @@ func ParseBitbucket(eventKey string, body []byte) (*Event, error) {
 		if content, ok := comment["content"].(map[string]any); ok {
 			body = str(content, "raw")
 		}
+		author := parseBitbucketUser(comment, "user")
 		ev.Comment = &Comment{
-			ID:   int64n(comment, "id"),
-			Body: body,
-			User: parseBitbucketUser(comment, "user").Login,
+			ID:       int64n(comment, "id"),
+			Body:     body,
+			User:     author.Login,
+			UserID:   author.ID,
+			UserUUID: author.UUID,
 		}
 		if inline, ok := comment["inline"].(map[string]any); ok {
 			ev.Comment.Path = str(inline, "path")
@@ -106,5 +112,5 @@ func parseBitbucketUser(m map[string]any, key string) User {
 	if login == "" {
 		login = str(actor, "display_name")
 	}
-	return User{Login: login}
+	return User{ID: str(actor, "account_id"), UUID: str(actor, "uuid"), Login: login}
 }

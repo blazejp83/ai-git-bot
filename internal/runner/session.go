@@ -115,7 +115,50 @@ func (s *Session) LoadMessages() []ai.ConversationMessage {
 	}
 
 	flush()
-	return messages
+	return pairToolCalls(messages)
+}
+
+// pairToolCalls gives every assistant tool call a result. Providers reject a
+// tool call without a result, and a run that ended mid-round (crash, done
+// with other calls) can leave some unanswered; they get a synthetic
+// "not executed" result.
+func pairToolCalls(messages []ai.ConversationMessage) []ai.ConversationMessage {
+	var out []ai.ConversationMessage
+	for i := 0; i < len(messages); i++ {
+		m := messages[i]
+		if len(m.ToolResults) > 0 {
+			continue // results without a preceding tool call are orphans
+		}
+		out = append(out, m)
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+		called := map[string]bool{}
+		for _, tc := range m.ToolCalls {
+			called[tc.ID] = true
+		}
+		var results []ai.ToolResultMessage
+		answered := map[string]bool{}
+		if i+1 < len(messages) && len(messages[i+1].ToolResults) > 0 {
+			for _, r := range messages[i+1].ToolResults {
+				if called[r.ToolCallID] && !answered[r.ToolCallID] {
+					answered[r.ToolCallID] = true
+					results = append(results, r)
+				}
+			}
+			i++
+		}
+		for _, tc := range m.ToolCalls {
+			if !answered[tc.ID] {
+				results = append(results, ai.ToolResultMessage{
+					ToolCallID: tc.ID, ToolName: tc.Name,
+					Content: "not executed — the run ended before this call ran",
+				})
+			}
+		}
+		out = append(out, ai.ConversationMessage{Role: "user", ToolResults: results})
+	}
+	return out
 }
 
 // SaveMessage persists a message to the database.

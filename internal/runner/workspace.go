@@ -45,6 +45,52 @@ func NewWorkspace(ctx context.Context, cloneURL, owner, repo, branch string) (*W
 	return &Workspace{Dir: tmpDir, RepoOwner: owner, RepoName: repo, Branch: branch}, nil
 }
 
+// CheckoutRef fetches ref from remote ("origin" or a clone URL) and checks it
+// out as a detached HEAD. It returns the commit id that is now checked out.
+func (w *Workspace) CheckoutRef(ctx context.Context, remote, ref string) (string, error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	if out, err := w.git(fetchCtx, "fetch", "--depth", "50", "--no-tags", remote, ref); err != nil {
+		return "", fmt.Errorf("git fetch %s: %w — %s", ref, err, redactURL(out))
+	}
+	if out, err := w.git(fetchCtx, "checkout", "--quiet", "--detach", "FETCH_HEAD"); err != nil {
+		return "", fmt.Errorf("git checkout %s: %w — %s", ref, err, out)
+	}
+	sha, err := w.git(fetchCtx, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse: %w — %s", err, sha)
+	}
+	return strings.TrimSpace(sha), nil
+}
+
+func (w *Workspace) git(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = w.Dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	return out.String(), err
+}
+
+// redactURL hides credentials embedded in URLs (scheme://user:secret@host).
+func redactURL(s string) string {
+	for {
+		i := strings.Index(s, "://")
+		if i < 0 {
+			return s
+		}
+		rest := s[i+3:]
+		at := strings.IndexByte(rest, '@')
+		end := strings.IndexAny(rest, " /\n")
+		if at < 0 || (end >= 0 && end < at) {
+			return s[:i+3] + redactURL(rest)
+		}
+		return s[:i+3] + "***@" + redactURL(rest[at+1:])
+	}
+}
+
 // Resolve returns the absolute path for a relative workspace path.
 // Rejects path traversal attempts.
 func (w *Workspace) Resolve(path string) (string, error) {
@@ -111,31 +157,6 @@ func (w *Workspace) ListFiles(dir, pattern string) ([]string, error) {
 		return nil
 	})
 	return files, nil
-}
-
-// Search runs grep in the workspace and returns matching lines.
-func (w *Workspace) Search(pattern, dir string) (string, error) {
-	searchDir := "."
-	if dir != "" {
-		searchDir = dir
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "grep", "-rn", "--include=*", "-I", pattern, searchDir)
-	cmd.Dir = w.Dir
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
-	cmd.Run() // grep returns exit 1 on no match, which is fine
-
-	result := out.String()
-	if len(result) > 10000 {
-		result = result[:10000] + "\n... (truncated)"
-	}
-	return result, nil
 }
 
 // Shell runs a command in the workspace directory.

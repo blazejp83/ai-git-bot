@@ -270,3 +270,25 @@ func TestHelpers(t *testing.T) {
 		t.Fatal("int64n missing should return 0")
 	}
 }
+
+func TestParseAccountIDsAndHeadRepo(t *testing.T) {
+	gh, err := ParseGitHub("issue_comment", []byte(`{"action":"created","sender":{"id":42,"login":"bot"},
+		"comment":{"id":1,"body":"hi","user":{"id":42,"login":"bot"}},"issue":{"number":3,"pull_request":{}}}`))
+	if err != nil || gh.Sender.ID != "42" || gh.Comment.UserID != "42" {
+		t.Errorf("GitHub ids: %+v %+v %v", gh.Sender, gh.Comment, err)
+	}
+	pr, _ := ParseGitHub("pull_request", []byte(`{"action":"opened","pull_request":{"number":1,"head":{"ref":"f","sha":"s","repo":{"full_name":"fork/r"}}}}`))
+	if pr.PullRequest.HeadRepo != "fork/r" {
+		t.Errorf("GitHub head repo = %q", pr.PullRequest.HeadRepo)
+	}
+	gl, _ := ParseGitLab("Note Hook", []byte(`{"user":{"id":5,"username":"u"},"object_attributes":{"id":9,"note":"x","author_id":5,"noteable_type":"MergeRequest"},"merge_request":{"iid":2}}`))
+	if gl.Sender.ID != "5" || gl.Comment.UserID != "5" || gl.Comment.User != "u" {
+		t.Errorf("GitLab ids: %+v %+v", gl.Sender, gl.Comment)
+	}
+	bb, _ := ParseBitbucket("pullrequest:comment_created", []byte(`{"actor":{"account_id":"a1","uuid":"{u1}","nickname":"n"},
+		"pullrequest":{"id":1,"source":{"repository":{"full_name":"fork/r"}}},
+		"comment":{"id":3,"content":{"raw":"x"},"user":{"account_id":"a1","uuid":"{u1}","nickname":"n"}}}`))
+	if bb.Sender.ID != "a1" || bb.Sender.UUID != "{u1}" || bb.Comment.UserID != "a1" || bb.PullRequest.HeadRepo != "fork/r" {
+		t.Errorf("Bitbucket ids: %+v %+v %+v", bb.Sender, bb.Comment, bb.PullRequest)
+	}
+}

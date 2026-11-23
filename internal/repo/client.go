@@ -51,6 +51,11 @@ type Client interface {
 	CreatePR(ctx context.Context, owner, repo, title, body, head, base string) (int64, error)
 	DeleteBranch(ctx context.Context, owner, repo, branchName string) error
 
+	// CurrentUser returns the account the integration's token authenticates as (cached).
+	CurrentUser(ctx context.Context) (Account, error)
+	// GetPRHead returns the live head of a pull request.
+	GetPRHead(ctx context.Context, owner, repo string, prNum int64) (PRHead, error)
+
 	// FormatPRRef formats a PR/MR reference for comments (e.g. "#1" or "!1").
 	FormatPRRef(prNum int64) string
 }

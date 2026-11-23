@@ -11,6 +11,7 @@ import (
 type GitHubClient struct {
 	creds Credentials
 	http  *http.Client
+	account accountCache
 }
 
 func NewGitHubClient(creds Credentials) *GitHubClient {

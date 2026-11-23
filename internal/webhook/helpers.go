@@ -1,8 +1,21 @@
 package webhook
 
+import "strconv"
+
 // str extracts a string from a JSON map.
 func str(m map[string]any, key string) string {
 	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// idStr extracts an id that may be a JSON number or string.
+func idStr(m map[string]any, key string) string {
+	switch v := m[key].(type) {
+	case float64:
+		return strconv.FormatInt(int64(v), 10)
+	case string:
 		return v
 	}
 	return ""
@@ -26,7 +39,7 @@ func parseUser(m map[string]any, key string) User {
 	if login == "" {
 		login = str(user, "username")
 	}
-	return User{Login: login}
+	return User{ID: idStr(user, "id"), Login: login}
 }
 
 // parseRepo extracts a repository from a JSON map at the given key.
@@ -87,6 +100,9 @@ func parsePR(pr map[string]any) *PullRequest {
 
 	if head, ok := pr["head"].(map[string]any); ok {
 		result.Head = Ref{RefName: str(head, "ref"), SHA: str(head, "sha")}
+		if repo, ok := head["repo"].(map[string]any); ok {
+			result.HeadRepo = str(repo, "full_name")
+		}
 	}
 	if base, ok := pr["base"].(map[string]any); ok {
 		result.Base = Ref{RefName: str(base, "ref"), SHA: str(base, "sha")}
@@ -130,17 +146,19 @@ func parseIssue(issue map[string]any) *Issue {
 
 // parseComment extracts a comment from a JSON map.
 func parseComment(comment map[string]any) *Comment {
-	user := ""
+	user, userID := "", ""
 	if u, ok := comment["user"].(map[string]any); ok {
 		user = str(u, "login")
 		if user == "" {
 			user = str(u, "username")
 		}
+		userID = idStr(u, "id")
 	}
 	return &Comment{
 		ID:                  int64n(comment, "id"),
 		Body:                str(comment, "body"),
 		User:                user,
+		UserID:              userID,
 		Path:                str(comment, "path"),
 		Line:                int(int64n(comment, "line")),
 		PullRequestReviewID: int64n(comment, "pull_request_review_id"),

@@ -23,7 +23,8 @@
                 </div>
                 <div class="col-md-6">
                     <label for="username" class="form-label">Username</label>
-                    <input type="text" class="form-control" id="username" name="username" value="{{.Bot.Username}}" placeholder="Bot username on Git platform" required/>
+                    <input type="text" class="form-control" id="username" name="username" value="{{.Bot.Username}}" placeholder="Optional fallback"/>
+                    <div class="form-text">The bot is recognised as the account its Git integration's token belongs to. This username is only used if that account cannot be read, and as an extra @mention alias.</div>
                 </div>
                 <div class="col-12">
                     <label for="prompt" class="form-label">System Prompt</label>

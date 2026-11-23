@@ -13,6 +13,7 @@ import (
 type GitLabClient struct {
 	creds Credentials
 	http  *http.Client
+	account accountCache
 }
 
 func NewGitLabClient(creds Credentials) *GitLabClient {
@@ -60,7 +61,25 @@ func buildUnifiedDiff(diffs []any) string {
 		oldPath, _ := m["old_path"].(string)
 		newPath, _ := m["new_path"].(string)
 		diff, _ := m["diff"].(string)
-		fmt.Fprintf(&sb, "--- a/%s\n+++ b/%s\n%s\n", oldPath, newPath, diff)
+		newFile, _ := m["new_file"].(bool)
+		deleted, _ := m["deleted_file"].(bool)
+		renamed, _ := m["renamed_file"].(bool)
+		fmt.Fprintf(&sb, "diff --git a/%s b/%s\n", oldPath, newPath)
+		from, to := "a/"+oldPath, "b/"+newPath
+		switch {
+		case newFile:
+			sb.WriteString("new file mode 100644\n")
+			from = "/dev/null"
+		case deleted:
+			sb.WriteString("deleted file mode 100644\n")
+			to = "/dev/null"
+		case renamed:
+			fmt.Fprintf(&sb, "rename from %s\nrename to %s\n", oldPath, newPath)
+		}
+		fmt.Fprintf(&sb, "--- %s\n+++ %s\n%s", from, to, diff)
+		if !strings.HasSuffix(diff, "\n") {
+			sb.WriteString("\n")
+		}
 	}
 	return sb.String()
 }
