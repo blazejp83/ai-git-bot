@@ -134,3 +134,16 @@ func TestReviewDebouncer(t *testing.T) {
 		t.Errorf("entries = %d, want <= 2", len(d.entries))
 	}
 }
+
+func TestReviewsTargetBranch(t *testing.T) {
+	all := botSettings{}
+	if !all.reviewsTargetBranch("develop") {
+		t.Error("no filter must allow every branch")
+	}
+	bs := botSettings{prTargetBranches: parseAllowlist("master, release/*")}
+	for base, want := range map[string]bool{"master": true, "release/1.2": true, "develop": false, "feature/master": false, "": false} {
+		if got := bs.reviewsTargetBranch(base); got != want {
+			t.Errorf("reviewsTargetBranch(%q) = %v, want %v", base, got, want)
+		}
+	}
+}

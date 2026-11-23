@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -49,16 +50,16 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var botName, botUsername, providerType string
 	var aiIntegrationID, gitIntegrationID int64
 	var agentEnabled bool
-	var botPrompt, shellAllowlist sql.NullString
+	var botPrompt, shellAllowlist, prTargets sql.NullString
 	var maxTurnsReview, maxTurnsImpl sql.NullInt64
 
 	err := h.db.QueryRow(`
 		SELECT b.id, b.name, b.username, gi.provider_type, b.ai_integration_id, b.git_integration_id,
-		       b.agent_enabled, b.prompt, b.max_turns_review, b.max_turns_implementation, b.shell_allowlist
+		       b.agent_enabled, b.prompt, b.max_turns_review, b.max_turns_implementation, b.shell_allowlist, b.pr_target_branches
 		FROM bots b
 		JOIN git_integrations gi ON b.git_integration_id = gi.id
 		WHERE b.webhook_secret = ? AND b.enabled = 1
-	`, secret).Scan(&botID, &botName, &botUsername, &providerType, &aiIntegrationID, &gitIntegrationID, &agentEnabled, &botPrompt, &maxTurnsReview, &maxTurnsImpl, &shellAllowlist)
+	`, secret).Scan(&botID, &botName, &botUsername, &providerType, &aiIntegrationID, &gitIntegrationID, &agentEnabled, &botPrompt, &maxTurnsReview, &maxTurnsImpl, &shellAllowlist, &prTargets)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ignored"})
@@ -153,6 +154,9 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if shellAllowlist.Valid && shellAllowlist.String != "" {
 		bs.shellAllowlist = parseAllowlist(shellAllowlist.String)
 	}
+	if prTargets.Valid {
+		bs.prTargetBranches = parseAllowlist(prTargets.String)
+	}
 
 	go h.dispatch(bs, event)
 
@@ -177,6 +181,22 @@ type botSettings struct {
 	maxTurnsReview int      // 0 = use global default
 	maxTurnsImpl   int      // 0 = use global default
 	shellAllowlist []string // nil = use global default
+	// prTargetBranches limits automatic reviews to PRs into these base
+	// branches (glob patterns); nil = all branches.
+	prTargetBranches []string
+}
+
+// reviewsTargetBranch reports whether PRs into base are reviewed automatically.
+func (bs botSettings) reviewsTargetBranch(base string) bool {
+	if len(bs.prTargetBranches) == 0 {
+		return true
+	}
+	for _, pattern := range bs.prTargetBranches {
+		if ok, err := path.Match(pattern, base); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (bs botSettings) resolveShellAllowlist() []string {
@@ -232,6 +252,11 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 	switch event.Action {
 	case "opened", "synchronized":
 		if event.PullRequest != nil {
+			if base := event.PullRequest.Base.RefName; !bs.reviewsTargetBranch(base) {
+				slog.Info("PR target branch not configured for automatic review; skipping",
+					"pr", event.PullRequest.Number, "base", base, "allowed", strings.Join(bs.prTargetBranches, ", "))
+				return
+			}
 			// One user action can fire several trigger events for the same commit;
 			// only the first starts a review.
 			key := debounceKey(bs.id, event.Repo.FullName, event.PullRequest.Number)

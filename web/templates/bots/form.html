@@ -61,6 +61,13 @@
                     </div>
                 </div>
 
+                <div class="col-12">
+                    <label for="prTargetBranches" class="form-label">Review PRs targeting branches</label>
+                    <input type="text" class="form-control font-monospace" id="prTargetBranches" name="prTargetBranches"
+                           value="{{.Bot.PrTargetBranches}}" placeholder="All branches (e.g. master, release/*)"/>
+                    <div class="form-text">Comma-separated target (base) branches whose pull requests are reviewed automatically when opened or updated; <code>*</code> and <code>?</code> work as wildcards. Leave empty to review every pull request. An explicit <code>@bot #review</code> comment always works.</div>
+                </div>
+
                 <!-- Turn Limit Overrides -->
                 <div class="col-12 mt-3">
                     <div class="card bg-light">

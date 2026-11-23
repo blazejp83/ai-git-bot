@@ -23,12 +23,12 @@ func NewBotHandlers(tpl *Templates, db *sql.DB, enc *encrypt.Service) *BotHandle
 }
 
 type botListRow struct {
-	ID               int64
-	Name, Username   string
-	AiName, GitName  string
-	Enabled          bool
-	AgentEnabled     bool
-	WebhookPath      string
+	ID              int64
+	Name, Username  string
+	AiName, GitName string
+	Enabled         bool
+	AgentEnabled    bool
+	WebhookPath     string
 }
 
 type botFormData struct {
@@ -40,19 +40,20 @@ type botFormData struct {
 }
 
 type botFormRow struct {
-	ID               int64
-	Name             string
-	Username              string
-	Prompt                string
-	WebhookSecret         string
-	WebhookPath           string
-	Enabled               bool
-	AgentEnabled          bool
-	AiIntegrationID       int64
-	GitIntegrationID      int64
+	ID                     int64
+	Name                   string
+	Username               string
+	Prompt                 string
+	WebhookSecret          string
+	WebhookPath            string
+	Enabled                bool
+	AgentEnabled           bool
+	AiIntegrationID        int64
+	GitIntegrationID       int64
 	MaxTurnsReview         int
 	MaxTurnsImplementation int
 	ShellAllowlist         string
+	PrTargetBranches       string
 }
 
 type idNameRow struct {
@@ -103,12 +104,12 @@ func (h *BotHandlers) EditForm(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(idStr, 10, 64)
 
 	var b botFormRow
-	var prompt, secret, shellAllowlist sql.NullString
+	var prompt, secret, shellAllowlist, prTargets sql.NullString
 	var maxTurnsR, maxTurnsI sql.NullInt64
 	err := h.db.QueryRow(`SELECT id, name, username, prompt, webhook_secret, enabled, agent_enabled,
-	       ai_integration_id, git_integration_id, max_turns_review, max_turns_implementation, shell_allowlist FROM bots WHERE id = ?`, id).
+	       ai_integration_id, git_integration_id, max_turns_review, max_turns_implementation, shell_allowlist, pr_target_branches FROM bots WHERE id = ?`, id).
 		Scan(&b.ID, &b.Name, &b.Username, &prompt, &secret, &b.Enabled, &b.AgentEnabled,
-			&b.AiIntegrationID, &b.GitIntegrationID, &maxTurnsR, &maxTurnsI, &shellAllowlist)
+			&b.AiIntegrationID, &b.GitIntegrationID, &maxTurnsR, &maxTurnsI, &shellAllowlist, &prTargets)
 	if err != nil {
 		http.Redirect(w, r, "/bots", http.StatusSeeOther)
 		return
@@ -121,6 +122,9 @@ func (h *BotHandlers) EditForm(w http.ResponseWriter, r *http.Request) {
 	}
 	if shellAllowlist.Valid {
 		b.ShellAllowlist = shellAllowlist.String
+	}
+	if prTargets.Valid {
+		b.PrTargetBranches = prTargets.String
 	}
 	if maxTurnsI.Valid {
 		b.MaxTurnsImplementation = int(maxTurnsI.Int64)
@@ -153,6 +157,7 @@ func (h *BotHandlers) Save(w http.ResponseWriter, r *http.Request) {
 	if customShell {
 		shellAllowlist = strings.TrimSpace(r.FormValue("shellAllowlist"))
 	}
+	prTargets := strings.TrimSpace(r.FormValue("prTargetBranches"))
 	idStr := r.FormValue("id")
 	now := time.Now().UTC()
 
@@ -165,15 +170,15 @@ func (h *BotHandlers) Save(w http.ResponseWriter, r *http.Request) {
 		webhookSecret := r.FormValue("webhookSecret")
 		h.db.Exec(`UPDATE bots SET name=?, username=?, prompt=?, enabled=?, agent_enabled=?,
 			ai_integration_id=?, git_integration_id=?, webhook_secret=?,
-			max_turns_review=?, max_turns_implementation=?, shell_allowlist=?, updated_at=? WHERE id=?`,
+			max_turns_review=?, max_turns_implementation=?, shell_allowlist=?, pr_target_branches=?, updated_at=? WHERE id=?`,
 			name, username, nullStr(prompt), enabled, agentEnabled, aiID, gitID, nullStr(webhookSecret),
-			mtrSQL, mtiSQL, salSQL, now, id)
+			mtrSQL, mtiSQL, salSQL, nullStr(prTargets), now, id)
 	} else {
 		secret := generateSecret()
 		h.db.Exec(`INSERT INTO bots (name, username, prompt, webhook_secret, enabled, agent_enabled,
-			ai_integration_id, git_integration_id, max_turns_review, max_turns_implementation, shell_allowlist, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			name, username, nullStr(prompt), secret, enabled, agentEnabled, aiID, gitID, mtrSQL, mtiSQL, salSQL, now, now)
+			ai_integration_id, git_integration_id, max_turns_review, max_turns_implementation, shell_allowlist, pr_target_branches, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			name, username, nullStr(prompt), secret, enabled, agentEnabled, aiID, gitID, mtrSQL, mtiSQL, salSQL, nullStr(prTargets), now, now)
 	}
 
 	http.Redirect(w, r, "/bots", http.StatusSeeOther)
