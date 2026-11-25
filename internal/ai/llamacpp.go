@@ -243,13 +243,14 @@ func (c *LlamaCppClient) doRequest(ctx context.Context, prompt string, maxTokens
 		return "", fmt.Errorf("parse response: %w", err)
 	}
 
-	if lcResp.Content == "" {
-		return "Unable to generate " + logContext + " - empty response from AI.", nil
-	}
-
 	if lcResp.TokensEvaluated != nil && lcResp.TokensPredicted != nil {
 		slog.Info("llama.cpp response", "context", logContext,
 			"prompt_tokens", *lcResp.TokensEvaluated, "generated_tokens", *lcResp.TokensPredicted)
+		reportUsage(ctx, c.cfg.Model, TokenUsage{PromptTokens: *lcResp.TokensEvaluated, CompletionTokens: *lcResp.TokensPredicted})
+	}
+
+	if lcResp.Content == "" {
+		return "Unable to generate " + logContext + " - empty response from AI.", nil
 	}
 
 	return lcResp.Content, nil

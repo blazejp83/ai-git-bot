@@ -1,0 +1,133 @@
+{{define "title"}}AI Usage - AI Git Bot{{end}}
+
+{{define "content"}}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2><i class="bi bi-graph-up"></i> AI Usage</h2>
+    <form action="/usage/clear" method="post" onsubmit="return confirm('Delete all recorded AI usage and errors? This cannot be undone.');">
+        <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i> Clear all</button>
+    </form>
+</div>
+
+{{if .Cleared}}<div class="alert alert-success">All usage and error records were deleted.</div>{{end}}
+
+<form method="get" action="/usage" class="row g-2 align-items-end mb-4">
+    <div class="col-auto">
+        <label for="from" class="form-label">From</label>
+        <input type="date" class="form-control" id="from" name="from" value="{{.From}}"/>
+    </div>
+    <div class="col-auto">
+        <label for="to" class="form-label">To</label>
+        <input type="date" class="form-control" id="to" name="to" value="{{.To}}"/>
+    </div>
+    <div class="col-auto">
+        <button type="submit" class="btn btn-primary"><i class="bi bi-funnel"></i> Apply</button>
+    </div>
+</form>
+
+<div class="row g-3 mb-2">
+    <div class="col-md-3">
+        <div class="card"><div class="card-body">
+            <h6 class="text-muted mb-1">Estimated cost</h6>
+            <h3 class="mb-0">{{usd .Summary.Cost}}</h3>
+        </div></div>
+    </div>
+    <div class="col-md-3">
+        <div class="card"><div class="card-body">
+            <h6 class="text-muted mb-1">AI requests</h6>
+            <h3 class="mb-0">{{num .Summary.Calls}}</h3>
+        </div></div>
+    </div>
+    <div class="col-md-3">
+        <div class="card"><div class="card-body">
+            <h6 class="text-muted mb-1">Tokens</h6>
+            <h3 class="mb-0">{{num .Summary.TotalTokens}}</h3>
+            <small class="text-muted">in {{num .Summary.Input}} · out {{num .Summary.Output}}</small>
+        </div></div>
+    </div>
+    <div class="col-md-3">
+        <div class="card"><div class="card-body">
+            <h6 class="text-muted mb-1">Prompt cache hit rate</h6>
+            <h3 class="mb-0">{{pct .Summary.CacheHitRatio}}</h3>
+            <small class="text-muted">read {{num .Summary.CacheRead}} · written {{num .Summary.CacheWrite}}</small>
+        </div></div>
+    </div>
+</div>
+<p class="text-muted small mb-4">
+    Costs are estimates at Anthropic list prices ({{.PricesAsOf}}), with 5-minute cache writes; your invoice is authoritative.
+    {{if .Summary.UnpricedCalls}}{{num .Summary.UnpricedCalls}} {{if eq .Summary.UnpricedCalls 1}}request uses a model{{else}}requests use models{{end}} without a known price and {{if eq .Summary.UnpricedCalls 1}}is{{else}}are{{end}} not included.{{end}}
+    {{if .RetentionDays}}Records older than {{.RetentionDays}} days are deleted daily (<code>AI_USAGE_RETENTION_DAYS</code>).{{else}}Records are kept forever (<code>AI_USAGE_RETENTION_DAYS=0</code>).{{end}}
+</p>
+
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Requests <small class="text-muted">(newest first, times in UTC)</small></h5></div>
+    <div class="card-body p-0">
+        {{if not .Rows}}
+        <p class="text-muted text-center py-4 mb-0">No AI requests in this period.</p>
+        {{else}}
+        <div class="table-responsive">
+            <table class="table table-sm table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Time</th><th>Bot</th><th>Session</th><th>Kind</th><th class="text-end">Round</th><th>Model</th>
+                        <th class="text-end">Input</th><th class="text-end">Output</th>
+                        <th class="text-end">Cache read</th><th class="text-end">Cache write</th><th class="text-end">Est. cost</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Rows}}
+                    <tr>
+                        <td class="text-nowrap">{{formatTime .RecordedAt}}</td>
+                        <td>{{.Bot}}</td>
+                        <td class="text-nowrap">{{.Session}}</td>
+                        <td>{{.Kind}}</td>
+                        <td class="text-end">{{if .Round}}{{.Round}}{{else}}<span class="text-muted">—</span>{{end}}</td>
+                        <td class="text-nowrap">{{.Model}}</td>
+                        <td class="text-end">{{num .Input}}</td>
+                        <td class="text-end">{{num .Output}}</td>
+                        <td class="text-end">{{num .CacheRead}}</td>
+                        <td class="text-end">{{num .CacheWrite}}</td>
+                        <td class="text-end">{{if .Cost.Valid}}{{usd .Cost.Float64}}{{else}}<span class="text-muted">—</span>{{end}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+        {{end}}
+    </div>
+    {{if gt .Pages 1}}
+    <div class="card-footer d-flex justify-content-between align-items-center">
+        <small class="text-muted">Page {{.Page}} of {{.Pages}} · {{num .Total}} requests</small>
+        <div>
+            {{if gt .Page 1}}<a class="btn btn-sm btn-outline-secondary" href="/usage?from={{.From}}&to={{.To}}&page={{dec .Page}}">Newer</a>{{end}}
+            {{if lt .Page .Pages}}<a class="btn btn-sm btn-outline-secondary" href="/usage?from={{.From}}&to={{.To}}&page={{inc .Page}}">Older</a>{{end}}
+        </div>
+    </div>
+    {{end}}
+</div>
+
+<div class="card">
+    <div class="card-header"><h5 class="mb-0">AI errors <small class="text-muted">(latest 20 in this period)</small></h5></div>
+    <div class="card-body p-0">
+        {{if not .Errors}}
+        <p class="text-muted text-center py-4 mb-0">No AI errors in this period.</p>
+        {{else}}
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead class="table-light"><tr><th>Time</th><th>Bot</th><th>Session</th><th>Integration</th><th>Error</th></tr></thead>
+                <tbody>
+                    {{range .Errors}}
+                    <tr>
+                        <td class="text-nowrap">{{formatTime .RecordedAt}}</td>
+                        <td>{{.Bot}}</td>
+                        <td class="text-nowrap">{{.Session}}</td>
+                        <td>{{.Integration}}</td>
+                        <td class="text-danger small" style="max-width: 40rem; word-break: break-word;">{{.Message}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+        {{end}}
+    </div>
+</div>
+{{end}}

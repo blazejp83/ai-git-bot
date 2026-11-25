@@ -1,7 +1,10 @@
 package web
 
 import (
+	"time"
+
 	"database/sql"
+	"github.com/tmseidel/ai-git-bot/internal/usage"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -16,7 +19,11 @@ type Handlers struct {
 	sessions *auth.SessionManager
 	db       *sql.DB
 	enc      *encrypt.Service
+	usage    *usage.Store
 }
+
+// SetUsageStore lets the dashboard show AI usage.
+func (h *Handlers) SetUsageStore(s *usage.Store) { h.usage = s }
 
 func NewHandlers(tpl *Templates, admin *auth.AdminService, sessions *auth.SessionManager, db *sql.DB, enc *encrypt.Service) *Handlers {
 	return &Handlers{tpl: tpl, admin: admin, sessions: sessions, db: db, enc: enc}
@@ -123,13 +130,13 @@ func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) {
 // --- Dashboard ---
 
 type dashboardData struct {
-	ActiveNav           string
-	Bots                []botRow
-	TotalBots           int
-	ActiveBots          int
-	TotalWebhookCalls   int64
-	TotalTokensSent     int64
-	TotalTokensReceived int64
+	ActiveNav         string
+	Bots              []botRow
+	TotalBots         int
+	ActiveBots        int
+	TotalWebhookCalls int64
+	Usage30           usage.Summary // AI usage in the last 30 days
+	Errors7           int64         // AI errors in the last 7 days
 }
 
 type botRow struct {
@@ -148,7 +155,6 @@ type botRow struct {
 func (h *Handlers) Dashboard(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(`
 		SELECT b.id, b.name, b.username, b.enabled, b.webhook_call_count,
-		       b.ai_tokens_sent, b.ai_tokens_received,
 		       b.last_webhook_at, b.last_error_message, b.last_error_at,
 		       ai.name, gi.name
 		FROM bots b
@@ -167,11 +173,9 @@ func (h *Handlers) Dashboard(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var b botRow
 		var enabled bool
-		var tokensSent, tokensReceived int64
 		var lastWebhook, lastError, lastErrorMsg sql.NullString
 		err := rows.Scan(
 			&b.ID, &b.Name, &b.Username, &enabled, &b.WebhookCallCount,
-			&tokensSent, &tokensReceived,
 			&lastWebhook, &lastErrorMsg, &lastError,
 			&b.AiIntegrationName, &b.GitIntegrationName,
 		)
@@ -195,8 +199,15 @@ func (h *Handlers) Dashboard(w http.ResponseWriter, r *http.Request) {
 			data.ActiveBots++
 		}
 		data.TotalWebhookCalls += b.WebhookCallCount
-		data.TotalTokensSent += tokensSent
-		data.TotalTokensReceived += tokensReceived
+	}
+	if h.usage != nil {
+		now := time.Now()
+		if sum, err := h.usage.Summary(usage.Filter{From: now.Add(-30 * 24 * time.Hour)}); err == nil {
+			data.Usage30 = sum
+		} else {
+			slog.Error("Failed to load AI usage", "err", err)
+		}
+		data.Errors7, _ = h.usage.ErrorCount(now.Add(-7 * 24 * time.Hour))
 	}
 
 	h.tpl.Render(w, "dashboard", data)

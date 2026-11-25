@@ -32,6 +32,9 @@ type Config struct {
 
 	// Session
 	SessionSecret string
+
+	// AI usage log: rows older than this many days are pruned daily (0 = keep forever).
+	AIUsageRetentionDays int
 }
 
 func Load() *Config {
@@ -58,6 +61,8 @@ func Load() *Config {
 		AgentValidationToolTimeout: envInt("AGENT_VALIDATION_TOOL_TIMEOUT", 300),
 
 		SessionSecret: envOr("SESSION_SECRET", ""), // unset → random per process (see auth.NewSessionManager)
+
+		AIUsageRetentionDays: envInt("AI_USAGE_RETENTION_DAYS", 90),
 	}
 }
 

@@ -135,6 +135,7 @@ func (c *OllamaClient) ChatWithTools(ctx context.Context, messages []Conversatio
 	result := &ChatResponse{StopReason: "end_turn"}
 	if oResp.PromptEvalCount != nil && oResp.EvalCount != nil {
 		result.Usage = &TokenUsage{PromptTokens: *oResp.PromptEvalCount, CompletionTokens: *oResp.EvalCount}
+		reportUsage(ctx, model, *result.Usage)
 	}
 
 	if oResp.Message != nil {
@@ -228,6 +229,9 @@ func (c *OllamaClient) doSimpleRequest(ctx context.Context, model string, maxTok
 	var oResp ollamaResponse
 	if err := json.Unmarshal(respBody, &oResp); err != nil {
 		return "", fmt.Errorf("parse response: %w", err)
+	}
+	if oResp.PromptEvalCount != nil && oResp.EvalCount != nil {
+		reportUsage(ctx, model, TokenUsage{PromptTokens: *oResp.PromptEvalCount, CompletionTokens: *oResp.EvalCount})
 	}
 
 	if oResp.Message == nil || oResp.Message.Content == "" {

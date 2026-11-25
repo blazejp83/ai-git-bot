@@ -27,9 +27,18 @@ var Providers = []ProviderMeta{
 
 // ClientFactory creates and caches AI clients from database integrations.
 type ClientFactory struct {
-	enc   *encrypt.Service
-	mu    sync.RWMutex
-	cache map[int64]cachedClient
+	enc      *encrypt.Service
+	mu       sync.RWMutex
+	cache    map[int64]cachedClient
+	recorder Recorder
+}
+
+// SetRecorder makes every client built from now on record its usage and errors.
+func (f *ClientFactory) SetRecorder(r Recorder) {
+	f.mu.Lock()
+	f.recorder = r
+	f.cache = make(map[int64]cachedClient)
+	f.mu.Unlock()
 }
 
 type cachedClient struct {
@@ -107,6 +116,7 @@ func (f *ClientFactory) GetClient(db *sql.DB, integrationID int64) (Client, erro
 	}
 
 	f.mu.Lock()
+	client = NewRecordingClient(client, f.recorder, name, providerType, model)
 	f.cache[id] = cachedClient{updatedAt: updatedAt, client: client}
 	f.mu.Unlock()
 

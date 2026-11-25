@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -12,6 +13,7 @@ import (
 	"github.com/tmseidel/ai-git-bot/internal/config"
 	"github.com/tmseidel/ai-git-bot/internal/encrypt"
 	"github.com/tmseidel/ai-git-bot/internal/prompt"
+	"github.com/tmseidel/ai-git-bot/internal/usage"
 	"github.com/tmseidel/ai-git-bot/internal/web"
 )
 
@@ -23,6 +25,11 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 	aiHandlers := web.NewAiHandlers(tpl, database, enc)
 	botHandlers := web.NewBotHandlers(tpl, database, enc)
 	gitHandlers := web.NewGitHandlers(tpl, database, enc)
+
+	usageStore := usage.NewStore(database)
+	handlers.SetUsageStore(usageStore)
+	usageHandlers := web.NewUsageHandlers(tpl, usageStore, cfg.AIUsageRetentionDays)
+	go usageStore.RunPruner(time.Duration(cfg.AIUsageRetentionDays)*24*time.Hour, nil)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -50,6 +57,7 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 	// API routes (no auth — webhook secret in URL)
 	promptSvc := prompt.NewService(cfg.PromptsDir)
 	webhookHandler := bot.NewWebhookHandler(database, enc, promptSvc, cfg)
+	webhookHandler.SetUsageRecorder(usageStore)
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/webhook/{secret}", webhookHandler.Handle)
 	})
@@ -62,6 +70,10 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 		})
 		r.Get("/dashboard", handlers.Dashboard)
+
+		// AI usage
+		r.Get("/usage", usageHandlers.List)
+		r.Post("/usage/clear", usageHandlers.Clear)
 
 		// AI Integrations CRUD
 		r.Get("/ai-integrations", aiHandlers.List)

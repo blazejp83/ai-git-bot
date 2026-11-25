@@ -109,7 +109,7 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 		}
 
 		// Call AI with backoff
-		response, err := r.callWithBackoff(ctx, messages, toolDefs)
+		response, err := r.callWithBackoff(ai.WithRound(ctx, turn+1), messages, toolDefs)
 		if err != nil {
 			slog.Error("AI call failed", "turn", turn+1, "err", err)
 			return RunResult{Status: StatusError, TurnCount: turn + 1}, err

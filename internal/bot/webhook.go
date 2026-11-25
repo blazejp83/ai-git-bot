@@ -44,6 +44,11 @@ func NewWebhookHandler(db *sql.DB, enc *encrypt.Service, promptSvc *prompt.Servi
 	}
 }
 
+// SetUsageRecorder records the token usage and errors of every AI call the bots make.
+func (h *WebhookHandler) SetUsageRecorder(r ai.Recorder) {
+	h.aiFactory.SetRecorder(r)
+}
+
 func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	secret := chi.URLParam(r, "secret")
 
@@ -223,7 +228,11 @@ func (bs botSettings) implTurns(globalDefault int) int {
 }
 
 func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
-	ctx := context.Background()
+	// Tag every AI call of this event for the usage log.
+	ctx := ai.WithBot(context.Background(), bs.name)
+	if num := resolvePRNumber(event); num > 0 {
+		ctx = ai.WithSession(ctx, fmt.Sprintf("%s#%d", event.Repo.FullName, num))
+	}
 
 	slog.Info("Dispatching webhook event",
 		"bot", bs.name, "action", event.Action,

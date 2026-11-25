@@ -205,6 +205,7 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, messages []Conversa
 		}
 		slog.Info("Anthropic tool response", "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens,
 			"cache_read_tokens", resp.Usage.CacheReadInputTokens, "cache_write_tokens", resp.Usage.CacheCreationInputTokens)
+		reportUsage(ctx, model, *result.Usage)
 	}
 
 	for _, block := range resp.Content {
@@ -415,14 +416,21 @@ func (c *AnthropicClient) doSimpleRequest(ctx context.Context, model string, max
 			text += block.Text
 		}
 	}
-	if text == "" {
-		return "Unable to generate " + logContext + " - empty response from AI.", nil
-	}
-
+	// Usage is reported before the empty-text check: an empty answer still costs tokens.
 	if resp.Usage != nil {
 		slog.Info("Anthropic response", "context", logContext,
 			"input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens,
 			"cache_read_tokens", resp.Usage.CacheReadInputTokens, "cache_write_tokens", resp.Usage.CacheCreationInputTokens)
+		reportUsage(ctx, model, TokenUsage{
+			PromptTokens:     resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens,
+			CompletionTokens: resp.Usage.OutputTokens,
+			CacheReadTokens:  resp.Usage.CacheReadInputTokens,
+			CacheWriteTokens: resp.Usage.CacheCreationInputTokens,
+		})
+	}
+
+	if text == "" {
+		return "Unable to generate " + logContext + " - empty response from AI.", nil
 	}
 
 	return text, nil
