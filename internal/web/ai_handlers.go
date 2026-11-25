@@ -55,6 +55,7 @@ func (h *AiHandlers) List(w http.ResponseWriter, r *http.Request) {
 	h.tpl.Render(w, "ai-integrations/list", map[string]any{
 		"ActiveNav":    "ai-integrations",
 		"Integrations": integrations,
+		"Notice":       inUseNotice(h.db, "ai_integrations", "ai_integration_id", r.URL.Query().Get("in_use")),
 	})
 }
 
@@ -193,6 +194,10 @@ func (h *AiHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, _ := strconv.ParseInt(idStr, 10, 64)
 
+	if bots, err := botsUsing(h.db, "ai_integration_id", id); err == nil && len(bots) > 0 {
+		http.Redirect(w, r, fmt.Sprintf("/ai-integrations?in_use=%d", id), http.StatusSeeOther)
+		return
+	}
 	_, err := h.db.Exec("DELETE FROM ai_integrations WHERE id = ?", id)
 	if err != nil {
 		slog.Error("Failed to delete AI integration", "err", err)

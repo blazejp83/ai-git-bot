@@ -6,6 +6,10 @@
     <a href="/git-integrations/new" class="btn btn-primary"><i class="bi bi-plus-circle"></i> New Integration</a>
 </div>
 
+{{if .Notice}}
+<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> {{.Notice}}</div>
+{{end}}
+
 <div class="card">
     <div class="card-body">
         {{if not .Integrations}}

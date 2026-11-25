@@ -8,6 +8,10 @@
     </a>
 </div>
 
+{{if .Notice}}
+<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> {{.Notice}}</div>
+{{end}}
+
 <div class="card">
     <div class="card-body">
         {{if not .Integrations}}

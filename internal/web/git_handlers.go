@@ -2,6 +2,7 @@ package web
 
 import (
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -47,6 +48,7 @@ func (h *GitHandlers) List(w http.ResponseWriter, r *http.Request) {
 
 	h.tpl.Render(w, "git-integrations/list", map[string]any{
 		"ActiveNav": "git-integrations", "Integrations": integrations,
+		"Notice": inUseNotice(h.db, "git_integrations", "git_integration_id", r.URL.Query().Get("in_use")),
 	})
 }
 
@@ -127,6 +129,10 @@ func (h *GitHandlers) Save(w http.ResponseWriter, r *http.Request) {
 func (h *GitHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, _ := strconv.ParseInt(idStr, 10, 64)
+	if bots, err := botsUsing(h.db, "git_integration_id", id); err == nil && len(bots) > 0 {
+		http.Redirect(w, r, fmt.Sprintf("/git-integrations?in_use=%d", id), http.StatusSeeOther)
+		return
+	}
 	_, err := h.db.Exec("DELETE FROM git_integrations WHERE id = ?", id)
 	if err != nil {
 		slog.Error("Failed to delete git integration", "err", err)
