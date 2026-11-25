@@ -1,6 +1,6 @@
 services:
   ai-git-bot:
-    image: registry.bpds1621.synology.me/ai-git-bot:2.4.0
+    image: registry.bpds1621.synology.me/ai-git-bot:2.5.0
     user: "1000:1000"
     ports:
       - "8080:8080"
