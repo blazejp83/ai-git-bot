@@ -35,7 +35,7 @@ func LoadSession(db *sql.DB, owner, repo, targetType string, targetNumber int64)
 	err := db.QueryRow(`
 		SELECT id FROM runner_sessions
 		WHERE repo_owner = ? AND repo_name = ? AND target_type = ? AND target_number = ?
-		ORDER BY created_at DESC LIMIT 1
+		ORDER BY created_at DESC, id DESC LIMIT 1
 	`, owner, repo, targetType, targetNumber).Scan(&id)
 	if err != nil {
 		return nil, err

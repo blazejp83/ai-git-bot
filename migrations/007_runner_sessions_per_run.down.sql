@@ -1,0 +1,1 @@
+-- Not reversible: the old schema allowed one session per target only.
