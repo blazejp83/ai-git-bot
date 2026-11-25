@@ -125,18 +125,47 @@ func ParseGitLab(eventType string, body []byte) (*Event, error) {
 			Body:   str(attrs, "description"),
 		}
 
-		// Extract assignees
-		if assignees, ok := raw["assignees"].([]any); ok {
-			for _, a := range assignees {
-				if am, ok := a.(map[string]any); ok {
-					ev.Issue.Assignees = append(ev.Issue.Assignees, str(am, "username"))
+		ev.Issue.AssigneeUsers = usersFromList(raw["assignees"])
+		for _, u := range ev.Issue.AssigneeUsers {
+			ev.Issue.Assignees = append(ev.Issue.Assignees, u.Login)
+		}
+		if len(ev.Issue.Assignees) > 0 {
+			ev.Issue.Assignee = ev.Issue.Assignees[0]
+		}
+
+		// GitLab has no "assigned" action: an assignment is an update whose
+		// changes list the assignees before and after.
+		if changes, ok := raw["changes"].(map[string]any); ok {
+			if ch, ok := changes["assignees"].(map[string]any); ok {
+				added := addedUsers(usersFromList(ch["previous"]), usersFromList(ch["current"]))
+				if len(added) > 0 {
+					ev.Action = "assigned"
+					ev.Issue.AddedAssignees = added
 				}
-			}
-			if len(ev.Issue.Assignees) > 0 {
-				ev.Issue.Assignee = ev.Issue.Assignees[0]
 			}
 		}
 	}
 
 	return ev, nil
+}
+
+// addedUsers returns the users in current that were not in previous.
+func addedUsers(previous, current []User) []User {
+	key := func(u User) string {
+		if u.ID != "" {
+			return "id:" + u.ID
+		}
+		return "login:" + u.Login
+	}
+	before := map[string]bool{}
+	for _, u := range previous {
+		before[key(u)] = true
+	}
+	var added []User
+	for _, u := range current {
+		if !before[key(u)] {
+			added = append(added, u)
+		}
+	}
+	return added
 }

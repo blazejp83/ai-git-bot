@@ -42,6 +42,29 @@ func parseUser(m map[string]any, key string) User {
 	return User{ID: idStr(user, "id"), Login: login}
 }
 
+// userFromMap reads a user object (login or username, numeric or string id).
+func userFromMap(u map[string]any) User {
+	login := str(u, "login")
+	if login == "" {
+		login = str(u, "username")
+	}
+	return User{ID: idStr(u, "id"), Login: login}
+}
+
+// usersFromList reads a JSON array of user objects.
+func usersFromList(v any) []User {
+	list, _ := v.([]any)
+	var users []User
+	for _, item := range list {
+		if m, ok := item.(map[string]any); ok {
+			if u := userFromMap(m); u.Login != "" || u.ID != "" {
+				users = append(users, u)
+			}
+		}
+	}
+	return users
+}
+
 // parseRepo extracts a repository from a JSON map at the given key.
 func parseRepo(m map[string]any, key string) Repository {
 	repo, ok := m[key].(map[string]any)
@@ -122,22 +145,16 @@ func parseIssue(issue map[string]any) *Issue {
 		result.Number = int64n(issue, "iid")
 	}
 
+	result.AssigneeUsers = usersFromList(issue["assignees"])
 	if assignee, ok := issue["assignee"].(map[string]any); ok {
-		result.Assignee = str(assignee, "login")
-		if result.Assignee == "" {
-			result.Assignee = str(assignee, "username")
+		u := userFromMap(assignee)
+		result.Assignee = u.Login
+		if len(result.AssigneeUsers) == 0 && (u.Login != "" || u.ID != "") {
+			result.AssigneeUsers = []User{u}
 		}
 	}
-	if assignees, ok := issue["assignees"].([]any); ok {
-		for _, a := range assignees {
-			if am, ok := a.(map[string]any); ok {
-				login := str(am, "login")
-				if login == "" {
-					login = str(am, "username")
-				}
-				result.Assignees = append(result.Assignees, login)
-			}
-		}
+	for _, u := range result.AssigneeUsers {
+		result.Assignees = append(result.Assignees, u.Login)
 	}
 	_, result.IsPR = issue["pull_request"]
 

@@ -292,3 +292,34 @@ func TestParseAccountIDsAndHeadRepo(t *testing.T) {
 		t.Errorf("Bitbucket ids: %+v %+v %+v", bb.Sender, bb.Comment, bb.PullRequest)
 	}
 }
+
+func TestParseIssueAssignment(t *testing.T) {
+	// Gitea: no field naming who was just assigned, only the current assignees.
+	gt, _ := ParseGitea([]byte(`{"action":"assigned","sender":{"id":1,"login":"alice"},
+		"issue":{"number":4,"assignee":{"id":42,"login":"bot"},"assignees":[{"id":42,"login":"bot"},{"id":3,"login":"carol"}]}}`))
+	if gt.Action != "assigned" || len(gt.Issue.AssigneeUsers) != 2 || gt.Issue.AssigneeUsers[0].ID != "42" || len(gt.Issue.AddedAssignees) != 0 {
+		t.Errorf("Gitea assignment: %+v", gt.Issue)
+	}
+
+	// GitHub: "assignee" is the one user this event assigned.
+	gh, _ := ParseGitHub("issues", []byte(`{"action":"assigned","assignee":{"id":3,"login":"carol"},
+		"issue":{"number":4,"assignees":[{"id":42,"login":"bot"},{"id":3,"login":"carol"}]}}`))
+	if len(gh.Issue.AddedAssignees) != 1 || gh.Issue.AddedAssignees[0].Login != "carol" || len(gh.Issue.AssigneeUsers) != 2 {
+		t.Errorf("GitHub assignment: %+v", gh.Issue)
+	}
+
+	// GitLab: an update whose changes add assignees becomes "assigned".
+	gl, _ := ParseGitLab("Issue Hook", []byte(`{"user":{"id":1,"username":"alice"},
+		"object_attributes":{"iid":4,"action":"update"},
+		"assignees":[{"id":3,"username":"carol"},{"id":42,"username":"bot"}],
+		"changes":{"assignees":{"previous":[{"id":3,"username":"carol"}],"current":[{"id":3,"username":"carol"},{"id":42,"username":"bot"}]}}}`))
+	if gl.Action != "assigned" || len(gl.Issue.AddedAssignees) != 1 || gl.Issue.AddedAssignees[0].ID != "42" {
+		t.Errorf("GitLab assignment: action=%s %+v", gl.Action, gl.Issue)
+	}
+	// An update that only removes an assignee is not an assignment.
+	gl2, _ := ParseGitLab("Issue Hook", []byte(`{"object_attributes":{"iid":4,"action":"update"},"assignees":[],
+		"changes":{"assignees":{"previous":[{"id":42,"username":"bot"}],"current":[]}}}`))
+	if gl2.Action == "assigned" {
+		t.Error("GitLab unassignment must not count as an assignment")
+	}
+}

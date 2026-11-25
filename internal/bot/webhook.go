@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/tmseidel/ai-git-bot/internal/ai"
@@ -309,6 +310,15 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 
 	case "assigned":
 		if event.Issue != nil && bs.agentEnabled {
+			if !bs.identity.assignedTo(event.Issue) {
+				slog.Info("Issue assigned to someone else; not starting the agent",
+					"issue", event.Issue.Number, "assignees", strings.Join(event.Issue.Assignees, ", "))
+				return
+			}
+			if reason := h.implementationBusy(owner, repoName, event.Issue.Number); reason != "" {
+				slog.Info("Not starting the agent again", "issue", event.Issue.Number, "reason", reason)
+				return
+			}
 			h.runImplementation(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.implTurns(50), allowlist, bs.gitIntID)
 		}
 
@@ -628,6 +638,27 @@ When you're done, call the "done" tool with a summary of your changes.`, issue.T
 			prNumber, len(changedFiles), fileList.String()))
 
 	slog.Info("Implementation completed", "issue", issue.Number, "pr", prNumber, "turns", result.TurnCount)
+}
+
+// implementationStaleAfter is how long an IN_PROGRESS implementation session
+// blocks a new run; older ones are treated as abandoned (e.g. a restart mid-run).
+const implementationStaleAfter = 2 * time.Hour
+
+// implementationBusy explains why a new implementation run must not start for
+// an issue, or returns "". Gitea re-sends "assigned" whenever another assignee
+// is added, so without this one issue would get several agents.
+func (h *WebhookHandler) implementationBusy(owner, repoName string, issueNum int64) string {
+	status, updatedAt, ok := runner.LatestStatus(h.db, runner.ModeImplementation, owner, repoName, "issue", issueNum)
+	if !ok {
+		return ""
+	}
+	switch {
+	case status == "IN_PROGRESS" && time.Since(updatedAt) < implementationStaleAfter:
+		return "an implementation is already running"
+	case status == "PR_CREATED":
+		return "an implementation already opened a pull request"
+	}
+	return ""
 }
 
 // runAgenticFollowup runs a full agentic session to investigate a specific question on a PR.

@@ -73,6 +73,25 @@ func (b botIdentity) matches(id, uuid, login string) bool {
 	return login != "" && b.login != "" && strings.EqualFold(login, b.login)
 }
 
+// assignedTo reports whether the bot is among the users an issue event
+// assigned: the users the event added when the provider names them (GitHub,
+// GitLab), otherwise the issue's current assignees (Gitea).
+func (b botIdentity) assignedTo(issue *webhook.Issue) bool {
+	if issue == nil {
+		return false
+	}
+	candidates := issue.AddedAssignees
+	if len(candidates) == 0 {
+		candidates = issue.AssigneeUsers
+	}
+	for _, u := range candidates {
+		if b.is(u) {
+			return true
+		}
+	}
+	return false
+}
+
 // fromBot reports whether the event was caused by the bot itself.
 func (b botIdentity) fromBot(event *webhook.Event) bool {
 	if b.is(event.Sender) {

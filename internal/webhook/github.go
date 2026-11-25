@@ -64,6 +64,10 @@ func ParseGitHub(eventType string, body []byte) (*Event, error) {
 	case "issues":
 		if issue, ok := raw["issue"].(map[string]any); ok {
 			ev.Issue = parseIssue(issue)
+			// "assigned" names the one user this event assigned.
+			if a, ok := raw["assignee"].(map[string]any); ok && ev.Action == "assigned" {
+				ev.Issue.AddedAssignees = []User{userFromMap(a)}
+			}
 		}
 	}
 

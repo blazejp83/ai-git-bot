@@ -3,10 +3,13 @@ package bot
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/tmseidel/ai-git-bot/internal/db"
 	"github.com/tmseidel/ai-git-bot/internal/repo"
+	"github.com/tmseidel/ai-git-bot/internal/runner"
 	"github.com/tmseidel/ai-git-bot/internal/webhook"
 )
 
@@ -145,5 +148,67 @@ func TestReviewsTargetBranch(t *testing.T) {
 		if got := bs.reviewsTargetBranch(base); got != want {
 			t.Errorf("reviewsTargetBranch(%q) = %v, want %v", base, got, want)
 		}
+	}
+}
+
+func TestAssignedTo(t *testing.T) {
+	bot := newBotIdentity(repo.Account{ID: "42", Login: "bot"}, "")
+	cases := []struct {
+		name  string
+		issue *webhook.Issue
+		want  bool
+	}{
+		{"human only", &webhook.Issue{AssigneeUsers: []webhook.User{{ID: "3", Login: "carol"}}}, false},
+		{"bot among assignees (Gitea)", &webhook.Issue{AssigneeUsers: []webhook.User{{ID: "3"}, {ID: "42"}}}, true},
+		{"someone else added while bot already assigned (GitHub)", &webhook.Issue{
+			AssigneeUsers:  []webhook.User{{ID: "42"}, {ID: "3"}},
+			AddedAssignees: []webhook.User{{ID: "3", Login: "carol"}}}, false},
+		{"bot added (GitHub/GitLab)", &webhook.Issue{AddedAssignees: []webhook.User{{ID: "42"}}}, true},
+		{"login with another id is not the bot", &webhook.Issue{AssigneeUsers: []webhook.User{{ID: "7", Login: "bot"}}}, false},
+		{"no assignees", &webhook.Issue{}, false},
+		{"nil issue", nil, false},
+	}
+	for _, c := range cases {
+		if got := bot.assignedTo(c.issue); got != c.want {
+			t.Errorf("%s: assignedTo = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestImplementationBusy(t *testing.T) {
+	conn, err := db.Open("sqlite://" + filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := db.Migrate(conn, "../../migrations"); err != nil {
+		t.Fatal(err)
+	}
+	h := &WebhookHandler{db: conn}
+
+	if r := h.implementationBusy("o", "r", 4); r != "" {
+		t.Errorf("no session: busy = %q", r)
+	}
+	s, _ := runner.CreateSession(conn, runner.ModeImplementation, "o", "r", 4, "issue", "p")
+	if r := h.implementationBusy("o", "r", 4); r == "" {
+		t.Error("a running implementation must block a second one")
+	}
+	s.SetStatus("PR_CREATED")
+	if r := h.implementationBusy("o", "r", 4); r == "" {
+		t.Error("an implementation that opened a PR must block a second one")
+	}
+	s.SetStatus("FAILED")
+	if r := h.implementationBusy("o", "r", 4); r != "" {
+		t.Errorf("after a failure a retry must be allowed, got %q", r)
+	}
+	// A stale IN_PROGRESS session (e.g. the container restarted mid-run) does not block forever.
+	s2, _ := runner.CreateSession(conn, runner.ModeImplementation, "o", "r", 4, "issue", "p")
+	conn.Exec("UPDATE runner_sessions SET updated_at = ? WHERE id = ?", time.Now().UTC().Add(-3*time.Hour), s2.SessionID)
+	if r := h.implementationBusy("o", "r", 4); r != "" {
+		t.Errorf("stale session: busy = %q", r)
+	}
+	// Review sessions on the same number do not count.
+	if r := h.implementationBusy("o", "r", 5); r != "" {
+		t.Errorf("other issue: busy = %q", r)
 	}
 }

@@ -52,6 +52,14 @@ type Issue struct {
 	IsPR      bool
 	Assignee  string
 	Assignees []string
+
+	// AssigneeUsers are the issue's current assignees, with account ids
+	// where the provider sends them.
+	AssigneeUsers []User
+	// AddedAssignees are the users this event assigned, when the provider
+	// says so (GitHub's "assignee", GitLab's assignee changes). Empty when
+	// unknown (Gitea): then only AssigneeUsers is available.
+	AddedAssignees []User
 }
 
 type Comment struct {

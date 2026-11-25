@@ -43,6 +43,20 @@ func LoadSession(db *sql.DB, owner, repo, targetType string, targetNumber int64)
 	return &Session{db: db, SessionID: id}, nil
 }
 
+// LatestStatus returns the status and last update of the newest session of
+// the given mode for a target; ok is false when there is none.
+func LatestStatus(db *sql.DB, mode Mode, owner, repo, targetType string, targetNumber int64) (status string, updatedAt time.Time, ok bool) {
+	err := db.QueryRow(`
+		SELECT status, updated_at FROM runner_sessions
+		WHERE mode = ? AND repo_owner = ? AND repo_name = ? AND target_type = ? AND target_number = ?
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, string(mode), owner, repo, targetType, targetNumber).Scan(&status, &updatedAt)
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	return status, updatedAt, true
+}
+
 // LoadMessages loads all conversation messages for this session,
 // reconstructing them into the ConversationMessage format for the AI client.
 func (s *Session) LoadMessages() []ai.ConversationMessage {
