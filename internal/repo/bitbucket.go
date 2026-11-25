@@ -11,8 +11,8 @@ import (
 )
 
 type BitbucketClient struct {
-	creds Credentials
-	http  *http.Client
+	creds   Credentials
+	http    *http.Client
 	account accountCache
 }
 
@@ -196,10 +196,10 @@ func (c *BitbucketClient) DeleteFile(ctx context.Context, owner, repo, path, mes
 func (c *BitbucketClient) CreatePR(ctx context.Context, owner, repo, title, body, head, base string) (int64, error) {
 	result, err := httpJSON[map[string]any](ctx, c.http, "POST", c.apiURL("/repositories/%s/%s/pullrequests", owner, repo), c.headers(),
 		map[string]any{
-			"title":       title,
-			"description": body,
-			"source":      map[string]any{"branch": map[string]string{"name": head}},
-			"destination": map[string]any{"branch": map[string]string{"name": base}},
+			"title":               title,
+			"description":         body,
+			"source":              map[string]any{"branch": map[string]string{"name": head}},
+			"destination":         map[string]any{"branch": map[string]string{"name": base}},
 			"close_source_branch": true,
 		})
 	if err != nil {

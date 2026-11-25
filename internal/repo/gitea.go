@@ -9,8 +9,8 @@ import (
 )
 
 type GiteaClient struct {
-	creds  Credentials
-	http   *http.Client
+	creds   Credentials
+	http    *http.Client
 	account accountCache
 }
 
