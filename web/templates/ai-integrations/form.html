@@ -121,16 +121,23 @@
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-check-lg"></i> Save
                 </button>
+                <button type="button" class="btn btn-outline-secondary ms-2"
+                        onclick="runConnectionTest(this, '/ai-integrations/test', 'testResult')">
+                    <i class="bi bi-plug"></i> Test connection
+                </button>
                 <a href="/ai-integrations" class="btn btn-secondary ms-2">
                     <i class="bi bi-x-lg"></i> Cancel
                 </a>
             </div>
+            <div class="form-text">Test connection uses the values above without saving them, and sends one or two short requests (a few tokens).</div>
+            <div id="testResult" class="mt-3"></div>
         </form>
     </div>
 </div>
 {{end}}
 
 {{define "scripts"}}
+<script src="/static/js/conntest.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     var providerSelect = document.getElementById('providerType');

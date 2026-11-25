@@ -80,6 +80,7 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 		r.Get("/ai-integrations/new", aiHandlers.NewForm)
 		r.Get("/ai-integrations/{id}/edit", aiHandlers.EditForm)
 		r.Post("/ai-integrations/save", aiHandlers.Save)
+		r.Post("/ai-integrations/test", aiHandlers.TestConnection)
 		r.Post("/ai-integrations/{id}/delete", aiHandlers.Delete)
 
 		// Bots CRUD
@@ -94,6 +95,7 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 		r.Get("/git-integrations/new", gitHandlers.NewForm)
 		r.Get("/git-integrations/{id}/edit", gitHandlers.EditForm)
 		r.Post("/git-integrations/save", gitHandlers.Save)
+		r.Post("/git-integrations/test", gitHandlers.TestConnection)
 		r.Post("/git-integrations/{id}/delete", gitHandlers.Delete)
 	})
 

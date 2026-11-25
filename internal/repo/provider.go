@@ -72,18 +72,9 @@ func (f *ClientFactory) GetClient(db *sql.DB, integrationID int64) (Client, erro
 		creds.Username = username.String
 	}
 
-	var client Client
-	switch providerType {
-	case "GITEA":
-		client = NewGiteaClient(creds)
-	case "GITHUB":
-		client = NewGitHubClient(creds)
-	case "GITLAB":
-		client = NewGitLabClient(creds)
-	case "BITBUCKET":
-		client = NewBitbucketClient(creds)
-	default:
-		return nil, fmt.Errorf("unknown git provider type: %s", providerType)
+	client, err := NewClient(providerType, creds)
+	if err != nil {
+		return nil, err
 	}
 
 	f.mu.Lock()
@@ -92,4 +83,20 @@ func (f *ClientFactory) GetClient(db *sql.DB, integrationID int64) (Client, erro
 
 	slog.Info("Built new repo client", "integration", name, "provider", providerType)
 	return client, nil
+}
+
+// NewClient builds an uncached client for a provider.
+func NewClient(providerType string, creds Credentials) (Client, error) {
+	switch providerType {
+	case "GITEA":
+		return NewGiteaClient(creds), nil
+	case "GITHUB":
+		return NewGitHubClient(creds), nil
+	case "GITLAB":
+		return NewGitLabClient(creds), nil
+	case "BITBUCKET":
+		return NewBitbucketClient(creds), nil
+	default:
+		return nil, fmt.Errorf("unknown git provider type: %s", providerType)
+	}
 }

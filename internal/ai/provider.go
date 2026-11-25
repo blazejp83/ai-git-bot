@@ -98,21 +98,9 @@ func (f *ClientFactory) GetClient(db *sql.DB, integrationID int64) (Client, erro
 		key, _ = f.enc.Decrypt(apiKey.String)
 	}
 
-	var client Client
-	switch providerType {
-	case "codex", "openai":
-		// "openai" is treated as "codex" for backward compatibility
-		client = NewCodexClient(cfg, key)
-	case "gemini":
-		client = NewGeminiClient(cfg, key)
-	case "anthropic":
-		client = NewAnthropicClient(apiURL, key, cfg)
-	case "ollama":
-		client = NewOllamaClient(apiURL, cfg)
-	case "llamacpp":
-		client = NewLlamaCppClient(apiURL, cfg)
-	default:
-		return nil, fmt.Errorf("unknown AI provider type: %s", providerType)
+	client, err := NewClient(providerType, apiURL, key, cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	f.mu.Lock()
@@ -122,6 +110,27 @@ func (f *ClientFactory) GetClient(db *sql.DB, integrationID int64) (Client, erro
 
 	slog.Info("Built new AI client", "integration", name, "provider", providerType)
 	return client, nil
+}
+
+// NewClient builds an uncached, unrecorded client for a provider. The factory
+// uses it, and so does the connection test, which must neither touch the
+// cache nor count as usage.
+func NewClient(providerType, apiURL, key string, cfg Config) (Client, error) {
+	switch providerType {
+	case "codex", "openai":
+		// "openai" is treated as "codex" for backward compatibility
+		return NewCodexClient(cfg, key), nil
+	case "gemini":
+		return NewGeminiClient(cfg, key), nil
+	case "anthropic":
+		return NewAnthropicClient(apiURL, key, cfg), nil
+	case "ollama":
+		return NewOllamaClient(apiURL, cfg), nil
+	case "llamacpp":
+		return NewLlamaCppClient(apiURL, cfg), nil
+	default:
+		return nil, fmt.Errorf("unknown AI provider type: %s", providerType)
+	}
 }
 
 // Evict removes a cached client.
