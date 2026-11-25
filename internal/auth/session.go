@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -21,12 +22,34 @@ type SessionManager struct {
 	secret []byte
 }
 
+// legacyDefaultSecret was the built-in SESSION_SECRET fallback. It is public,
+// so anyone could forge a session with it; it is treated as unset.
+const legacyDefaultSecret = "change-me-in-production-please"
+
+// NewSessionManager signs sessions with secret. Without a usable secret it
+// generates a random one for this process: sessions then do not survive a
+// restart, but they cannot be forged.
 func NewSessionManager(secret string) *SessionManager {
+	if secret == "" || secret == legacyDefaultSecret {
+		slog.Warn("SESSION_SECRET is not set; using a random secret, so logins do not survive a restart")
+		random := make([]byte, 32)
+		if _, err := rand.Read(random); err != nil {
+			panic("session secret: " + err.Error())
+		}
+		return &SessionManager{secret: random}
+	}
 	return &SessionManager{secret: []byte(secret)}
 }
 
-// CreateSession sets a signed session cookie with the username.
-func (sm *SessionManager) CreateSession(w http.ResponseWriter, username string) {
+// isHTTPS reports whether the browser reached the app over HTTPS, directly or
+// through a TLS-terminating reverse proxy (e.g. Synology DSM).
+func isHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// CreateSession sets a signed session cookie with the username. The cookie is
+// Secure when the request came over HTTPS, so it is never sent over plain HTTP.
+func (sm *SessionManager) CreateSession(w http.ResponseWriter, r *http.Request, username string) {
 	expires := time.Now().Add(sessionMaxAge)
 	token := sm.sign(username, expires)
 	http.SetCookie(w, &http.Cookie{
@@ -34,6 +57,7 @@ func (sm *SessionManager) CreateSession(w http.ResponseWriter, username string) 
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   isHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  expires,
 	})
@@ -49,12 +73,14 @@ func (sm *SessionManager) GetUsername(r *http.Request) string {
 }
 
 // DestroySession clears the session cookie.
-func (sm *SessionManager) DestroySession(w http.ResponseWriter) {
+func (sm *SessionManager) DestroySession(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   isHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 }

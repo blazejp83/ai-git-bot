@@ -136,12 +136,15 @@ func TestGitHubMergedDetection(t *testing.T) {
 func TestGitLabActionMapping(t *testing.T) {
 	tests := []struct {
 		glAction string
+		oldrev   string
 		want     string
 	}{
-		{"open", "opened"},
-		{"update", "synchronized"},
-		{"close", "closed"},
-		{"merge", "closed"},
+		{"open", "", "opened"},
+		{"reopen", "", "reopened"},
+		{"update", "abc123", "synchronized"}, // new commits pushed
+		{"update", "", "edited"},             // title/description/label edit
+		{"close", "", "closed"},
+		{"merge", "", "closed"},
 	}
 
 	for _, tt := range tests {
@@ -149,7 +152,7 @@ func TestGitLabActionMapping(t *testing.T) {
 			"user": {"username": "u"},
 			"project": {"id": 1, "name": "p", "namespace": "n"},
 			"object_attributes": {"id": 1, "iid": 1, "title": "t", "description": "",
-				"action": "` + tt.glAction + `", "state": "opened",
+				"action": "` + tt.glAction + `", "oldrev": "` + tt.oldrev + `", "state": "opened",
 				"source_branch": "f", "target_branch": "m",
 				"last_commit": {"id": "sha"}}
 		}`

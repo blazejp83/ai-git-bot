@@ -18,6 +18,10 @@ func ParseGitea(body []byte) (*Event, error) {
 	if pr, ok := raw["pull_request"].(map[string]any); ok {
 		ev.PullRequest = parsePR(pr)
 	}
+	if r, ok := raw["requested_reviewer"].(map[string]any); ok {
+		u := userFromMap(r)
+		ev.RequestedReviewer = &u
+	}
 
 	if issue, ok := raw["issue"].(map[string]any); ok {
 		ev.Issue = parseIssue(issue)

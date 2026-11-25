@@ -25,6 +25,10 @@ func ParseGitHub(eventType string, body []byte) (*Event, error) {
 		if ev.Action == "synchronize" {
 			ev.Action = "synchronized"
 		}
+		if r, ok := raw["requested_reviewer"].(map[string]any); ok {
+			u := userFromMap(r)
+			ev.RequestedReviewer = &u
+		}
 
 	case "issue_comment":
 		if comment, ok := raw["comment"].(map[string]any); ok {

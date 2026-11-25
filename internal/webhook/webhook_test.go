@@ -323,3 +323,19 @@ func TestParseIssueAssignment(t *testing.T) {
 		t.Error("GitLab unassignment must not count as an assignment")
 	}
 }
+
+func TestParseReviewRequested(t *testing.T) {
+	body := []byte(`{"action":"review_requested","requested_reviewer":{"id":42,"login":"bot"},
+		"pull_request":{"number":3,"head":{"sha":"abc"},"base":{"ref":"develop"}}}`)
+	gh, _ := ParseGitHub("pull_request", body)
+	gt, _ := ParseGitea(body)
+	for name, ev := range map[string]*Event{"GitHub": gh, "Gitea": gt} {
+		if ev.Action != "review_requested" || ev.RequestedReviewer == nil || ev.RequestedReviewer.ID != "42" || ev.PullRequest.Number != 3 {
+			t.Errorf("%s: %+v reviewer=%+v", name, ev, ev.RequestedReviewer)
+		}
+	}
+	re, _ := ParseGitHub("pull_request", []byte(`{"action":"reopened","pull_request":{"number":3}}`))
+	if re.Action != "reopened" {
+		t.Errorf("reopened action = %q", re.Action)
+	}
+}

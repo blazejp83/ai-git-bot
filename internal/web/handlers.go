@@ -111,12 +111,12 @@ func (h *Handlers) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sessions.CreateSession(w, user.Username)
+	h.sessions.CreateSession(w, r, user.Username)
 	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 }
 
 func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) {
-	h.sessions.DestroySession(w)
+	h.sessions.DestroySession(w, r)
 	http.Redirect(w, r, "/login?logout=1", http.StatusSeeOther)
 }
 

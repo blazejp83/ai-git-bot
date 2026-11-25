@@ -167,7 +167,8 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 // handledActions are the event actions dispatch acts on.
 var handledActions = map[string]bool{
-	"opened": true, "synchronized": true, "created": true, "reviewed": true, "assigned": true, "closed": true,
+	"opened": true, "synchronized": true, "reopened": true, "review_requested": true,
+	"created": true, "reviewed": true, "assigned": true, "closed": true,
 }
 
 type botSettings struct {
@@ -251,24 +252,21 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 	allowlist := bs.resolveShellAllowlist()
 
 	switch event.Action {
-	case "opened", "synchronized":
+	case "opened", "synchronized", "reopened":
 		if event.PullRequest != nil {
 			if base := event.PullRequest.Base.RefName; !bs.reviewsTargetBranch(base) {
 				slog.Info("PR target branch not configured for automatic review; skipping",
 					"pr", event.PullRequest.Number, "base", base, "allowed", strings.Join(bs.prTargetBranches, ", "))
 				return
 			}
-			// One user action can fire several trigger events for the same commit;
-			// only the first starts a review.
-			key := debounceKey(bs.id, event.Repo.FullName, event.PullRequest.Number)
-			sha := event.PullRequest.Head.SHA
-			if !h.debouncer.tryClaim(key, sha) {
-				slog.Info("Review already triggered for this commit; skipping", "pr", event.PullRequest.Number, "sha", sha)
-				return
-			}
-			if !h.runReview(ctx, aiClient, repoClient, owner, repoName, event.PullRequest.Number, event.PullRequest, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID) {
-				h.debouncer.release(key, sha)
-			}
+			h.reviewOnce(ctx, bs, event, aiClient, repoClient, promptText, allowlist)
+		}
+
+	case "review_requested":
+		// Asking the bot for a review is a deliberate request: no branch filter,
+		// but debounced, since opening a PR with the bot as reviewer also fires "opened".
+		if event.PullRequest != nil && event.RequestedReviewer != nil && bs.identity.is(*event.RequestedReviewer) {
+			h.reviewOnce(ctx, bs, event, aiClient, repoClient, promptText, allowlist)
 		}
 
 	case "created":
@@ -327,6 +325,21 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 			// Clean up session
 			slog.Info("PR closed", "pr", event.PullRequest.Number)
 		}
+	}
+}
+
+// reviewOnce runs an automatic review unless one was already triggered for the
+// same head commit within the debounce window; a skipped or failed review
+// gives its claim back.
+func (h *WebhookHandler) reviewOnce(ctx context.Context, bs botSettings, event *webhook.Event, aiClient ai.Client, repoClient repo.Client, promptText string, allowlist []string) {
+	pr := event.PullRequest
+	key := debounceKey(bs.id, event.Repo.FullName, pr.Number)
+	if !h.debouncer.tryClaim(key, pr.Head.SHA) {
+		slog.Info("Review already triggered for this commit; skipping", "pr", pr.Number, "sha", pr.Head.SHA, "action", event.Action)
+		return
+	}
+	if !h.runReview(ctx, aiClient, repoClient, event.Repo.Owner, event.Repo.Name, pr.Number, pr, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID) {
+		h.debouncer.release(key, pr.Head.SHA)
 	}
 }
 
@@ -585,8 +598,14 @@ When you're done, call the "done" tool with a summary of your changes.`, issue.T
 	}
 
 	// Collect changed files from workspace and commit them via repo API
-	changedFiles, _ := ws.ChangedFiles()
-	if len(changedFiles) == 0 {
+	changes, err := ws.Changes()
+	if err != nil {
+		repoClient.PostComment(ctx, owner, repoName, issue.Number,
+			"**AI Agent**: Could not list the changed files: "+err.Error())
+		session.SetStatus("FAILED")
+		return
+	}
+	if len(changes) == 0 {
 		repoClient.PostComment(ctx, owner, repoName, issue.Number,
 			"**AI Agent**: No files were changed. "+result.Text)
 		session.SetStatus("COMPLETED")
@@ -604,14 +623,12 @@ When you're done, call the "done" tool with a summary of your changes.`, issue.T
 		return
 	}
 
-	for _, path := range changedFiles {
-		content, err := ws.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		sha, _ := repoClient.GetFileSHA(ctx, owner, repoName, path, baseBranch)
-		commitMsg := fmt.Sprintf("agent: update %s (issue #%d)", path, issue.Number)
-		repoClient.CreateOrUpdateFile(ctx, owner, repoName, path, content, commitMsg, branchName, sha)
+	committed, failed := commitChanges(ctx, repoClient, ws, owner, repoName, baseBranch, branchName, issue.Number, changes)
+	if len(committed) == 0 {
+		repoClient.PostComment(ctx, owner, repoName, issue.Number,
+			"**AI Agent**: Could not commit any of the changes:\n"+failed)
+		session.SetStatus("FAILED")
+		return
 	}
 
 	// Create PR
@@ -629,15 +646,60 @@ When you're done, call the "done" tool with a summary of your changes.`, issue.T
 	session.SetStatus("PR_CREATED")
 
 	var fileList strings.Builder
-	for _, f := range changedFiles {
-		fmt.Fprintf(&fileList, "- `%s`\n", f)
+	for _, c := range committed {
+		if c.Deleted {
+			fmt.Fprintf(&fileList, "- `%s` (deleted)\n", c.Path)
+		} else {
+			fmt.Fprintf(&fileList, "- `%s`\n", c.Path)
+		}
 	}
-
-	repoClient.PostComment(ctx, owner, repoName, issue.Number,
-		fmt.Sprintf("**AI Agent**: Implementation complete! Created #%d\n\n**Files changed** (%d):\n%s",
-			prNumber, len(changedFiles), fileList.String()))
+	msg := fmt.Sprintf("**AI Agent**: Implementation complete! Created #%d\n\n**Files changed** (%d):\n%s",
+		prNumber, len(committed), fileList.String())
+	if failed != "" {
+		msg += "\n**Not committed** (the pull request is incomplete):\n" + failed
+	}
+	repoClient.PostComment(ctx, owner, repoName, issue.Number, msg)
 
 	slog.Info("Implementation completed", "issue", issue.Number, "pr", prNumber, "turns", result.TurnCount)
+}
+
+// commitChanges commits the workspace changes to branch through the provider
+// API, one commit per file: updates and new files with their content,
+// deletions with DeleteFile. It returns what was committed and a Markdown list
+// of the files that could not be.
+func commitChanges(ctx context.Context, repoClient repo.Client, ws *runner.Workspace, owner, repoName, baseBranch, branch string, issueNum int64, changes []runner.FileChange) (committed []runner.FileChange, failed string) {
+	var failures strings.Builder
+	fail := func(path string, err error) {
+		slog.Warn("Failed to commit file", "path", path, "err", err)
+		fmt.Fprintf(&failures, "- `%s`: %v\n", path, err)
+	}
+	for _, c := range changes {
+		sha, _ := repoClient.GetFileSHA(ctx, owner, repoName, c.Path, baseBranch)
+		if c.Deleted {
+			if sha == "" {
+				continue // not on the base branch: nothing to delete
+			}
+			msg := fmt.Sprintf("agent: delete %s (issue #%d)", c.Path, issueNum)
+			if err := repoClient.DeleteFile(ctx, owner, repoName, c.Path, msg, branch, sha); err != nil {
+				fail(c.Path, err)
+				continue
+			}
+			committed = append(committed, c)
+			continue
+		}
+		content, err := ws.ReadFile(c.Path)
+		if err != nil {
+			fail(c.Path, err)
+			continue
+		}
+		msg := fmt.Sprintf("agent: update %s (issue #%d)", c.Path, issueNum)
+		if err := repoClient.CreateOrUpdateFile(ctx, owner, repoName, c.Path, content, msg, branch, sha); err != nil {
+			fail(c.Path, err)
+			continue
+		}
+		committed = append(committed, c)
+	}
+	return committed, failures.String()
 }
 
 // implementationStaleAfter is how long an IN_PROGRESS implementation session

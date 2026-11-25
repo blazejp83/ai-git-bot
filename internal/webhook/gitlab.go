@@ -38,8 +38,16 @@ func ParseGitLab(eventType string, body []byte) (*Event, error) {
 		switch action {
 		case "open":
 			ev.Action = "opened"
+		case "reopen":
+			ev.Action = "reopened"
 		case "update":
-			ev.Action = "synchronized"
+			// Only an update carrying oldrev added commits; others are edits
+			// (title, description, labels, assignees) and need no review.
+			if str(attrs, "oldrev") != "" {
+				ev.Action = "synchronized"
+			} else {
+				ev.Action = "edited"
+			}
 		case "close", "merge":
 			ev.Action = "closed"
 		default:

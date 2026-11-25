@@ -57,7 +57,7 @@ func Load() *Config {
 		AgentValidationBuildTimeout: envInt("AGENT_VALIDATION_BUILD_TIMEOUT", 300),
 		AgentValidationToolTimeout: envInt("AGENT_VALIDATION_TOOL_TIMEOUT", 300),
 
-		SessionSecret: envOr("SESSION_SECRET", "change-me-in-production-please"),
+		SessionSecret: envOr("SESSION_SECRET", ""), // unset → random per process (see auth.NewSessionManager)
 	}
 }
 

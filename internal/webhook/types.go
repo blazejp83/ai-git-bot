@@ -11,6 +11,9 @@ type Event struct {
 	Issue       *Issue
 	Comment     *Comment
 	Review      *Review
+
+	// RequestedReviewer is the reviewer a "review_requested" event asked for.
+	RequestedReviewer *User
 }
 
 type User struct {

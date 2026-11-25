@@ -18,13 +18,28 @@ type Workspace struct {
 	RepoOwner string
 	RepoName  string
 	Branch    string
+
+	// root holds Dir and home; Cleanup removes it. Empty for workspaces built
+	// directly (tests), which then get a home created on first use.
+	root string
+	// home is HOME for shell commands. It sits next to the clone, not inside
+	// it, so npm, pip, Go and Corepack caches never show up as repo changes.
+	home string
 }
 
 // NewWorkspace clones a repository into a temp directory.
 func NewWorkspace(ctx context.Context, cloneURL, owner, repo, branch string) (*Workspace, error) {
-	tmpDir, err := os.MkdirTemp("", "runner-workspace-")
+	root, err := os.MkdirTemp("", "runner-workspace-")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+	tmpDir := filepath.Join(root, "repo")
+	home := filepath.Join(root, "home")
+	for _, d := range []string{tmpDir, home} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			os.RemoveAll(root)
+			return nil, fmt.Errorf("create %s: %w", d, err)
+		}
 	}
 
 	slog.Info("Cloning repository for workspace", "dir", tmpDir, "branch", branch)
@@ -38,11 +53,11 @@ func NewWorkspace(ctx context.Context, cloneURL, owner, repo, branch string) (*W
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("git clone failed: %w — %s", err, stderr.String())
+		os.RemoveAll(root)
+		return nil, fmt.Errorf("git clone failed: %w — %s", err, redactURL(stderr.String()))
 	}
 
-	return &Workspace{Dir: tmpDir, RepoOwner: owner, RepoName: repo, Branch: branch}, nil
+	return &Workspace{Dir: tmpDir, RepoOwner: owner, RepoName: repo, Branch: branch, root: root, home: home}, nil
 }
 
 // CheckoutRef fetches ref from remote ("origin" or a clone URL) and checks it
@@ -164,15 +179,19 @@ func (w *Workspace) Shell(ctx context.Context, command string, timeout time.Dura
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	home, err := w.homeDir()
+	if err != nil {
+		return "", -1, err
+	}
 	cmd := exec.CommandContext(execCtx, "sh", "-c", command)
 	cmd.Dir = w.Dir
-	cmd.Env = append(os.Environ(), "HOME="+w.Dir, "CI=true")
+	cmd.Env = append(os.Environ(), shellEnv(home)...)
 
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 
-	err := cmd.Run()
+	err = cmd.Run()
 
 	if execCtx.Err() == context.DeadlineExceeded {
 		return "", -1, fmt.Errorf("command timed out after %v", timeout)
@@ -195,35 +214,95 @@ func (w *Workspace) Shell(ctx context.Context, command string, timeout time.Dura
 	return result, exitCode, nil
 }
 
-// Cleanup removes the workspace directory.
-func (w *Workspace) Cleanup() {
-	if w.Dir != "" {
-		os.RemoveAll(w.Dir)
-		slog.Debug("Cleaned up workspace", "dir", w.Dir)
+// homeDir returns the HOME for shell commands, creating one next to (never
+// inside) the clone for workspaces built without NewWorkspace.
+func (w *Workspace) homeDir() (string, error) {
+	if w.home == "" {
+		h, err := os.MkdirTemp("", "runner-home-")
+		if err != nil {
+			return "", fmt.Errorf("create home dir: %w", err)
+		}
+		w.home = h
 	}
+	return w.home, nil
 }
 
-// ChangedFiles returns all files modified in the workspace (compared to git HEAD).
-func (w *Workspace) ChangedFiles() ([]string, error) {
-	cmd := exec.Command("git", "diff", "--name-only", "HEAD")
-	cmd.Dir = w.Dir
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Run()
-
-	// Also include untracked files
-	cmd2 := exec.Command("git", "ls-files", "--others", "--exclude-standard")
-	cmd2.Dir = w.Dir
-	cmd2.Stdout = &out
-	cmd2.Run()
-
-	var files []string
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		if line != "" {
-			files = append(files, line)
+// shellEnv is the environment added for shell commands. Rust's toolchains are
+// installed under the image user's real home, so rustup and cargo keep
+// pointing there when HOME moves.
+func shellEnv(home string) []string {
+	env := []string{"HOME=" + home, "CI=true", "XDG_CACHE_HOME=" + filepath.Join(home, ".cache")}
+	if realHome := os.Getenv("HOME"); realHome != "" {
+		for _, v := range []struct{ name, dir string }{{"RUSTUP_HOME", ".rustup"}, {"CARGO_HOME", ".cargo"}} {
+			if os.Getenv(v.name) == "" {
+				if st, err := os.Stat(filepath.Join(realHome, v.dir)); err == nil && st.IsDir() {
+					env = append(env, v.name+"="+filepath.Join(realHome, v.dir))
+				}
+			}
 		}
 	}
-	return files, nil
+	return env
+}
+
+// Cleanup removes the workspace directory and its shell home.
+func (w *Workspace) Cleanup() {
+	if w.root != "" {
+		os.RemoveAll(w.root)
+	} else {
+		if w.Dir != "" {
+			os.RemoveAll(w.Dir)
+		}
+		if w.home != "" {
+			os.RemoveAll(w.home)
+		}
+	}
+	slog.Debug("Cleaned up workspace", "dir", w.Dir)
+}
+
+// FileChange is a file the agent changed in the workspace.
+type FileChange struct {
+	Path    string
+	Deleted bool
+}
+
+// Changes lists the files changed in the workspace compared to HEAD:
+// modified, added (untracked, not ignored) and deleted files. A rename shows
+// up as a deletion of the old path plus the new path.
+func (w *Workspace) Changes() ([]FileChange, error) {
+	out, err := w.git(context.Background(), "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return nil, fmt.Errorf("git status: %w — %s", err, out)
+	}
+	return parsePorcelain(out), nil
+}
+
+// parsePorcelain reads `git status --porcelain=v1 -z` output.
+func parsePorcelain(out string) []FileChange {
+	var changes []FileChange
+	records := strings.Split(out, "\x00")
+	for i := 0; i < len(records); i++ {
+		rec := records[i]
+		if len(rec) < 4 {
+			continue
+		}
+		x, y, path := rec[0], rec[1], rec[3:]
+		switch {
+		case x == 'R' || x == 'C':
+			// "R  new" is followed by a record with the old path.
+			changes = append(changes, FileChange{Path: path})
+			if i+1 < len(records) {
+				i++
+				if x == 'R' {
+					changes = append(changes, FileChange{Path: records[i], Deleted: true})
+				}
+			}
+		case x == 'D' || y == 'D':
+			changes = append(changes, FileChange{Path: path, Deleted: true})
+		default:
+			changes = append(changes, FileChange{Path: path})
+		}
+	}
+	return changes
 }
 
 func matchPattern(name, pattern string) bool {

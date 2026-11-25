@@ -135,17 +135,11 @@ func NewToolRegistry(mode Mode, shellAllowlist []string, shellTimeout time.Durat
 				return "", fmt.Errorf("empty command")
 			}
 
-			// Extract the base command to check allowlist
-			parts := strings.Fields(command)
-			if len(parts) > 0 && len(r.shellAllowlist) > 0 {
-				if !r.shellAllowlist[parts[0]] {
-					slog.Warn("BLOCKED shell command — not in allowlist",
-						"command", parts[0],
-						"full_command", command,
-					)
-					return "", fmt.Errorf("command %q not allowed. Allowed: %s",
-						parts[0], strings.Join(shellAllowlistKeys(r.shellAllowlist), ", "))
-				}
+			// Every command in a chain must be allowed, not only the first word.
+			if err := checkShellAllowlist(command, r.shellAllowlist); err != nil {
+				slog.Warn("BLOCKED shell command", "reason", err, "full_command", command)
+				return "", fmt.Errorf("%v. Allowed: %s (plus cd, pwd, echo, printf, true, false, test)",
+					err, strings.Join(shellAllowlistKeys(r.shellAllowlist), ", "))
 			}
 
 			output, exitCode, err := ws.Shell(ctx, command, r.shellTimeout)
@@ -255,6 +249,7 @@ func shellAllowlistKeys(m map[string]bool) []string {
 	for k := range m {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 	return keys
 }
 
