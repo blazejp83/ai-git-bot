@@ -69,7 +69,7 @@ func TestFinishToolNudgeRefusalAndExtras(t *testing.T) {
 	}}
 	r := New(model, &Workspace{Dir: t.TempDir()}, &LogReporter{}, sess, Config{
 		Mode: ModeReview, MaxTurns: 10, ExtraTools: []RegisteredTool{note}, FinishTool: "finish", RequireFinishTool: true,
-		OnFinish: func(map[string]any) (string, error) {
+		OnFinish: func(string, map[string]any) (string, error) {
 			finishCalls++
 			if recorded == 0 {
 				return "", errors.New("record at least one note first")

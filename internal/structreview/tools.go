@@ -151,8 +151,8 @@ func Tools(store *Store, reviewID int64, pathKnown func(string) bool) []runner.R
 }
 
 // FinishCheck refuses to complete a review without an assessment.
-func FinishCheck(store *Store, reviewID int64) func(map[string]any) (string, error) {
-	return func(map[string]any) (string, error) {
+func FinishCheck(store *Store, reviewID int64) func(string, map[string]any) (string, error) {
+	return func(string, map[string]any) (string, error) {
 		r, err := store.Get(reviewID)
 		if err != nil {
 			return "", err

@@ -122,12 +122,12 @@ func TestToolsRecordAndRender(t *testing.T) {
 
 	// Completing needs an assessment.
 	check := FinishCheck(s, r.ID)
-	if _, err := check(nil); err == nil {
+	if _, err := check(FinishTool, nil); err == nil {
 		t.Error("completing without an assessment must be refused")
 	}
 	runTool(t, tools, "review_set_assessment", map[string]any{"summary": "Adds paging and a migration.",
 		"areas_reviewed": []any{"handler", "migration"}, "limitations": []any{"did not run the migration"}})
-	if _, err := check(nil); err != nil {
+	if _, err := check(FinishTool, nil); err != nil {
 		t.Errorf("complete after assessment: %v", err)
 	}
 

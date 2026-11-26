@@ -120,3 +120,35 @@ func (c *BitbucketClient) GetIssue(ctx context.Context, owner, repo string, num 
 	m, err := httpJSON[map[string]any](ctx, c.http, "GET", c.apiURL("/repositories/%s/%s/issues/%d", owner, repo, num), c.headers(), nil)
 	return IssueDetails{Title: strField(m, "title"), Body: strField(m, "content", "raw")}, err
 }
+
+// CreateIssue opens an issue and returns its number.
+func (c *GiteaClient) CreateIssue(ctx context.Context, owner, repo, title, body string) (int64, error) {
+	m, err := httpJSON[map[string]any](ctx, c.http, "POST", c.apiURL("/api/v1/repos/%s/%s/issues", owner, repo), c.headers(),
+		map[string]string{"title": title, "body": body})
+	return issueNumber(m, "number"), err
+}
+
+func (c *GitHubClient) CreateIssue(ctx context.Context, owner, repo, title, body string) (int64, error) {
+	m, err := httpJSON[map[string]any](ctx, c.http, "POST", c.apiURL("/repos/%s/%s/issues", owner, repo), c.headers(),
+		map[string]string{"title": title, "body": body})
+	return issueNumber(m, "number"), err
+}
+
+func (c *GitLabClient) CreateIssue(ctx context.Context, owner, repo, title, body string) (int64, error) {
+	m, err := httpJSON[map[string]any](ctx, c.http, "POST", c.apiURL("/api/v4/projects/%s/issues", c.projectPath(owner, repo)), c.headers(),
+		map[string]string{"title": title, "description": body})
+	return issueNumber(m, "iid"), err
+}
+
+func (c *BitbucketClient) CreateIssue(ctx context.Context, owner, repo, title, body string) (int64, error) {
+	m, err := httpJSON[map[string]any](ctx, c.http, "POST", c.apiURL("/repositories/%s/%s/issues", owner, repo), c.headers(),
+		map[string]any{"title": title, "content": map[string]string{"raw": body}})
+	return issueNumber(m, "id"), err
+}
+
+func issueNumber(m map[string]any, key string) int64 {
+	if n, ok := m[key].(float64); ok {
+		return int64(n)
+	}
+	return 0
+}

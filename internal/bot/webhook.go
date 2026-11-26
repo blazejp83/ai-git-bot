@@ -61,18 +61,19 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var agentEnabled bool
 	var botPrompt, shellAllowlist, prTargets sql.NullString
 	var structured bool
+	var issueWorkflow string
 	var maxBlockers, maxMedium, maxLow sql.NullInt64
 	var maxTurnsReview, maxTurnsImpl sql.NullInt64
 
 	err := h.db.QueryRow(`
 		SELECT b.id, b.name, b.username, gi.provider_type, b.ai_integration_id, b.git_integration_id,
 		       b.agent_enabled, b.prompt, b.max_turns_review, b.max_turns_implementation, b.shell_allowlist, b.pr_target_branches,
-		       b.structured_review, b.review_max_blockers, b.review_max_medium, b.review_max_low
+		       b.structured_review, b.review_max_blockers, b.review_max_medium, b.review_max_low, b.issue_workflow
 		FROM bots b
 		JOIN git_integrations gi ON b.git_integration_id = gi.id
 		WHERE b.webhook_secret = ? AND b.enabled = 1
 	`, secret).Scan(&botID, &botName, &botUsername, &providerType, &aiIntegrationID, &gitIntegrationID, &agentEnabled, &botPrompt, &maxTurnsReview, &maxTurnsImpl, &shellAllowlist, &prTargets,
-		&structured, &maxBlockers, &maxMedium, &maxLow)
+		&structured, &maxBlockers, &maxMedium, &maxLow, &issueWorkflow)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ignored"})
@@ -171,6 +172,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		bs.prTargetBranches = parseAllowlist(prTargets.String)
 	}
 	bs.structuredReview = structured
+	bs.issueWorkflow = issueWorkflow
 	bs.thresholds = structreview.Thresholds{
 		MaxBlockers: intPtr(maxBlockers), MaxMedium: intPtr(maxMedium), MaxLow: intPtr(maxLow),
 	}
@@ -203,6 +205,9 @@ type botSettings struct {
 	// (see internal/structreview); off means the free-text review.
 	structuredReview bool
 	thresholds       structreview.Thresholds
+	// issueWorkflow is what the bot does when assigned to an issue:
+	// "implement", "writer" or "none".
+	issueWorkflow string
 	// prTargetBranches limits automatic reviews to PRs into these base
 	// branches (glob patterns); nil = all branches.
 	prTargetBranches []string
@@ -294,6 +299,10 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 		}
 
 	case "created":
+		// A reply to the writer's questions continues it, no mention needed.
+		if event.Comment != nil && h.routeToWriter(ctx, aiClient, repoClient, owner, repoName, event, hasBotMention, promptText, bs) {
+			return
+		}
 		if event.Comment != nil && hasBotMention && h.routeToImplementation(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs, allowlist) {
 			return
 		}
@@ -334,10 +343,21 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 		}
 
 	case "assigned":
-		if event.Issue != nil && bs.agentEnabled {
-			if !bs.identity.assignedTo(event.Issue) {
-				slog.Info("Issue assigned to someone else; not starting the agent",
-					"issue", event.Issue.Number, "assignees", strings.Join(event.Issue.Assignees, ", "))
+		if event.Issue == nil {
+			return
+		}
+		if !bs.identity.assignedTo(event.Issue) {
+			slog.Info("Issue assigned to someone else; ignoring",
+				"issue", event.Issue.Number, "assignees", strings.Join(event.Issue.Assignees, ", "))
+			return
+		}
+		switch bs.issueWorkflow {
+		case workflowWriter:
+			h.startWriter(ctx, aiClient, repoClient, owner, repoName, event.Issue, promptText, bs)
+		case workflowNone:
+			slog.Info("Bot does nothing on issue assignment", "issue", event.Issue.Number)
+		default:
+			if !bs.agentEnabled {
 				return
 			}
 			if reason := h.implementationBusy(owner, repoName, event.Issue.Number); reason != "" {

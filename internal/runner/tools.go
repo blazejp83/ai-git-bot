@@ -121,37 +121,39 @@ func NewToolRegistry(mode Mode, shellAllowlist []string, shellTimeout time.Durat
 		})
 	}
 
-	r.register(RegisteredTool{
-		Def: ai.ToolDef{
-			Name:        "shell",
-			Description: "Run a shell command in the repository workspace. Use for building, testing, or any command-line operation.",
-			Parameters: jsonSchema(map[string]any{
-				"command": map[string]any{"type": "string", "description": "Shell command to execute"},
-			}, []string{"command"}),
-		},
-		Execute: func(ctx context.Context, ws *Workspace, input map[string]any) (string, error) {
-			command, _ := input["command"].(string)
-			if command == "" {
-				return "", fmt.Errorf("empty command")
-			}
+	if mode != ModeWriter {
+		r.register(RegisteredTool{
+			Def: ai.ToolDef{
+				Name:        "shell",
+				Description: "Run a shell command in the repository workspace. Use for building, testing, or any command-line operation.",
+				Parameters: jsonSchema(map[string]any{
+					"command": map[string]any{"type": "string", "description": "Shell command to execute"},
+				}, []string{"command"}),
+			},
+			Execute: func(ctx context.Context, ws *Workspace, input map[string]any) (string, error) {
+				command, _ := input["command"].(string)
+				if command == "" {
+					return "", fmt.Errorf("empty command")
+				}
 
-			// Every command in a chain must be allowed, not only the first word.
-			if err := checkShellAllowlist(command, r.shellAllowlist); err != nil {
-				slog.Warn("BLOCKED shell command", "reason", err, "full_command", command)
-				return "", fmt.Errorf("%v. Allowed: %s (plus cd, pwd, echo, printf, true, false, test)",
-					err, strings.Join(shellAllowlistKeys(r.shellAllowlist), ", "))
-			}
+				// Every command in a chain must be allowed, not only the first word.
+				if err := checkShellAllowlist(command, r.shellAllowlist); err != nil {
+					slog.Warn("BLOCKED shell command", "reason", err, "full_command", command)
+					return "", fmt.Errorf("%v. Allowed: %s (plus cd, pwd, echo, printf, true, false, test)",
+						err, strings.Join(shellAllowlistKeys(r.shellAllowlist), ", "))
+				}
 
-			output, exitCode, err := ws.Shell(ctx, command, r.shellTimeout)
-			if err != nil {
-				return "", err
-			}
-			if exitCode != 0 {
-				return fmt.Sprintf("Exit code: %d\n%s", exitCode, output), nil
-			}
-			return output, nil
-		},
-	})
+				output, exitCode, err := ws.Shell(ctx, command, r.shellTimeout)
+				if err != nil {
+					return "", err
+				}
+				if exitCode != 0 {
+					return fmt.Sprintf("Exit code: %d\n%s", exitCode, output), nil
+				}
+				return output, nil
+			},
+		})
+	}
 
 	r.register(RegisteredTool{
 		Def: ai.ToolDef{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/tmseidel/ai-git-bot/internal/ai"
@@ -15,6 +16,7 @@ type Mode string
 const (
 	ModeReview         Mode = "review"         // read-only tools, output = comment
 	ModeImplementation Mode = "implementation" // read+write tools, output = PR
+	ModeWriter         Mode = "writer"         // read-only tools without shell, output = a refined issue
 )
 
 // Config holds runner configuration.
@@ -33,10 +35,12 @@ type Config struct {
 	// FinishTool ends the run when called (default "done"). Another name
 	// removes the done tool.
 	FinishTool string
-	// OnFinish, when set, runs when the finish tool is called. An error
-	// refuses to finish: the model gets it as the tool's result and goes on.
-	// Its text, if not empty, becomes the run's result.
-	OnFinish func(input map[string]any) (string, error)
+	// FinishTools, when set, replaces FinishTool: any of them ends the run.
+	FinishTools []string
+	// OnFinish, when set, runs when a finish tool is called, with its name. An
+	// error refuses to finish: the model gets it as the tool's result and goes
+	// on. Its text, if not empty, becomes the run's result.
+	OnFinish func(tool string, input map[string]any) (string, error)
 	// RequireFinishTool nudges a model that answers in plain text to use its
 	// tools and the finish tool instead of ending the run (twice at most).
 	RequireFinishTool bool
@@ -45,11 +49,23 @@ type Config struct {
 // maxFinishNudges bounds the plain-text nudges of RequireFinishTool.
 const maxFinishNudges = 2
 
-func (c Config) finishTool() string {
-	if c.FinishTool == "" {
-		return "done"
+func (c Config) finishTools() []string {
+	if len(c.FinishTools) > 0 {
+		return c.FinishTools
 	}
-	return c.FinishTool
+	if c.FinishTool == "" {
+		return []string{"done"}
+	}
+	return []string{c.FinishTool}
+}
+
+func (c Config) isFinishTool(name string) bool {
+	for _, n := range c.finishTools() {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // RunStatus indicates how the runner finished.
@@ -88,7 +104,7 @@ func New(aiClient ai.Client, workspace *Workspace, reporter ProgressReporter, se
 	for _, t := range cfg.ExtraTools {
 		tools.register(t)
 	}
-	if cfg.finishTool() != "done" {
+	if !cfg.isFinishTool("done") {
 		delete(tools.tools, "done")
 	}
 
@@ -179,7 +195,7 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 			if answer == "" {
 				answer = "(no answer)"
 			}
-			nudge := fmt.Sprintf("You answered in text without calling a tool. Record your work with your tools and finish by calling %s.", r.config.finishTool())
+			nudge := fmt.Sprintf("You answered in text without calling a tool. Record your work with your tools and finish by calling %s.", strings.Join(r.config.finishTools(), " or "))
 			messages = append(messages,
 				ai.ConversationMessage{Role: "assistant", Content: answer, Thinking: response.ThinkingBlocks()},
 				ai.ConversationMessage{Role: "user", Content: nudge})
@@ -198,13 +214,13 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 		// Check for the finish tool
 		finishRefusal := ""
 		for _, tc := range response.ToolCalls() {
-			if tc.Name == r.config.finishTool() {
+			if r.config.isFinishTool(tc.Name) {
 				resultText, _ := tc.Input["result"].(string)
 				if resultText == "" {
 					resultText = text
 				}
 				if r.config.OnFinish != nil {
-					out, err := r.config.OnFinish(tc.Input)
+					out, err := r.config.OnFinish(tc.Name, tc.Input)
 					if err != nil {
 						finishRefusal = err.Error()
 						break
@@ -217,7 +233,7 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 				// ends on tool calls without results: a later run replaying it would
 				// otherwise see an announced action without its outcome.
 				for _, other := range response.ToolCalls() {
-					content := "not executed — the run ended with the " + r.config.finishTool() + " tool"
+					content := "not executed — the run ended with the " + tc.Name + " tool"
 					if other.ID == tc.ID {
 						content = "Accepted."
 					}
@@ -237,7 +253,7 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 
 			var output string
 			var execErr error
-			if tc.Name == r.config.finishTool() && finishRefusal != "" {
+			if r.config.isFinishTool(tc.Name) && finishRefusal != "" {
 				execErr = fmt.Errorf("cannot finish yet: %s", finishRefusal)
 			} else {
 				output, execErr = r.tools.Execute(ctx, r.workspace, tc.Name, tc.Input)

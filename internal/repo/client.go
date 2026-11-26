@@ -56,6 +56,8 @@ type Client interface {
 	// GetPRHead returns the live head of a pull request.
 	GetPRHead(ctx context.Context, owner, repo string, prNum int64) (PRHead, error)
 
+	// CreateIssue opens an issue and returns its number.
+	CreateIssue(ctx context.Context, owner, repo, title, body string) (int64, error)
 	// GetIssue returns an issue's title and description.
 	GetIssue(ctx context.Context, owner, repo string, num int64) (IssueDetails, error)
 	// ListIssueComments returns an issue's discussion, oldest first.

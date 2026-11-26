@@ -68,6 +68,16 @@
                     <div class="form-text">Comma-separated target (base) branches whose pull requests are reviewed automatically when opened or updated; <code>*</code> and <code>?</code> work as wildcards. Leave empty to review every pull request. An explicit <code>@bot #review</code> comment always works.</div>
                 </div>
 
+                <div class="col-md-6">
+                    <label for="issueWorkflow" class="form-label">When assigned to an issue</label>
+                    <select class="form-select" id="issueWorkflow" name="issueWorkflow">
+                        <option value="implement"{{if eq .Bot.IssueWorkflow "implement"}} selected{{end}}>Implement it (coding agent; needs Agent Enabled)</option>
+                        <option value="writer"{{if eq .Bot.IssueWorkflow "writer"}} selected{{end}}>Refine it into a specification (writer)</option>
+                        <option value="none"{{if eq .Bot.IssueWorkflow "none"}} selected{{end}}>Do nothing</option>
+                    </select>
+                    <div class="form-text">The writer asks clarifying questions or creates an "AI Created Issue" with requirements and acceptance criteria. Run it as its own bot with its own Git account and webhook: one account cannot tell "assigned to write" from "assigned to code".</div>
+                </div>
+
                 <!-- Structured review -->
                 <div class="col-12">
                     <div class="card bg-light">
