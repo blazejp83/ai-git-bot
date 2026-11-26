@@ -258,15 +258,7 @@ func convToAnth(m ConversationMessage) []anthMsg {
 
 	case len(m.ToolCalls) > 0:
 		// Assistant with tool calls. Thinking blocks go first, unchanged.
-		var blocks []anthContentBlock
-		for _, tb := range m.Thinking {
-			b := anthContentBlock{Type: tb.Type, Signature: tb.Signature, Data: tb.Data}
-			if tb.Type == "thinking" {
-				t := tb.Thinking
-				b.Thinking = &t
-			}
-			blocks = append(blocks, b)
-		}
+		blocks := thinkingBlocks(m.Thinking)
 		if m.Content != "" {
 			blocks = append(blocks, anthContentBlock{Type: "text", Text: m.Content})
 		}
@@ -284,9 +276,32 @@ func convToAnth(m ConversationMessage) []anthMsg {
 		}
 		return []anthMsg{{Role: "assistant", Content: blocks}}
 
+	case m.Role == "assistant" && len(m.Thinking) > 0:
+		// A text answer keeps its thinking blocks when replayed: current models
+		// reject a history whose middle turns lost theirs.
+		blocks := thinkingBlocks(m.Thinking)
+		if m.Content != "" {
+			blocks = append(blocks, anthContentBlock{Type: "text", Text: m.Content})
+		}
+		return []anthMsg{{Role: "assistant", Content: blocks}}
+
 	default:
 		return []anthMsg{{Role: m.Role, Content: m.Content}}
 	}
+}
+
+// thinkingBlocks converts stored thinking blocks back to wire blocks, unchanged.
+func thinkingBlocks(tbs []ThinkingBlock) []anthContentBlock {
+	var blocks []anthContentBlock
+	for _, tb := range tbs {
+		b := anthContentBlock{Type: tb.Type, Signature: tb.Signature, Data: tb.Data}
+		if tb.Type == "thinking" {
+			t := tb.Thinking
+			b.Thinking = &t
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks
 }
 
 func (c *AnthropicClient) doHTTPFull(ctx context.Context, body []byte) (*httpResult, error) {

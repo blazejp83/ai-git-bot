@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -26,6 +27,29 @@ type Config struct {
 	ShellAllowlist []string
 	ShellTimeout   int    // seconds
 	PRDiff         string // unified diff of the pull request; enables the pr_diff tool
+
+	// ExtraTools are registered next to the built-in tools.
+	ExtraTools []RegisteredTool
+	// FinishTool ends the run when called (default "done"). Another name
+	// removes the done tool.
+	FinishTool string
+	// OnFinish, when set, runs when the finish tool is called. An error
+	// refuses to finish: the model gets it as the tool's result and goes on.
+	// Its text, if not empty, becomes the run's result.
+	OnFinish func(input map[string]any) (string, error)
+	// RequireFinishTool nudges a model that answers in plain text to use its
+	// tools and the finish tool instead of ending the run (twice at most).
+	RequireFinishTool bool
+}
+
+// maxFinishNudges bounds the plain-text nudges of RequireFinishTool.
+const maxFinishNudges = 2
+
+func (c Config) finishTool() string {
+	if c.FinishTool == "" {
+		return "done"
+	}
+	return c.FinishTool
 }
 
 // RunStatus indicates how the runner finished.
@@ -61,6 +85,12 @@ func New(aiClient ai.Client, workspace *Workspace, reporter ProgressReporter, se
 		shellTimeout = 300
 	}
 	tools := NewToolRegistry(cfg.Mode, cfg.ShellAllowlist, time.Duration(shellTimeout)*time.Second, cfg.PRDiff)
+	for _, t := range cfg.ExtraTools {
+		tools.register(t)
+	}
+	if cfg.finishTool() != "done" {
+		delete(tools.tools, "done")
+	}
 
 	return &Runner{
 		aiClient:  aiClient,
@@ -86,6 +116,7 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 	toolDefs := r.tools.GetToolDefs()
 	task := initialPromptOf(messages, initialPrompt)
 
+	nudges := 0
 	warnedAt75 := false
 	warnedAt90 := false
 	budgetUrgent := false
@@ -140,6 +171,22 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 		// Save assistant message (with tool calls if any)
 		r.saveAssistantMessage(response)
 
+		// No tool calls: the model answered in text. Where the run must end
+		// with its finish tool, ask it to use its tools instead.
+		if !response.HasToolCalls() && r.config.RequireFinishTool && nudges < maxFinishNudges {
+			nudges++
+			answer := text
+			if answer == "" {
+				answer = "(no answer)"
+			}
+			nudge := fmt.Sprintf("You answered in text without calling a tool. Record your work with your tools and finish by calling %s.", r.config.finishTool())
+			messages = append(messages,
+				ai.ConversationMessage{Role: "assistant", Content: answer, Thinking: response.ThinkingBlocks()},
+				ai.ConversationMessage{Role: "user", Content: nudge})
+			r.session.SaveMessage("user", "text", nudge, "", "", "")
+			continue
+		}
+
 		// No tool calls → we're done
 		if !response.HasToolCalls() {
 			r.session.IncrementTurns(turn + 1)
@@ -148,18 +195,29 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 			return result, nil
 		}
 
-		// Check for "done" tool
+		// Check for the finish tool
+		finishRefusal := ""
 		for _, tc := range response.ToolCalls() {
-			if tc.Name == "done" {
+			if tc.Name == r.config.finishTool() {
 				resultText, _ := tc.Input["result"].(string)
 				if resultText == "" {
 					resultText = text
+				}
+				if r.config.OnFinish != nil {
+					out, err := r.config.OnFinish(tc.Input)
+					if err != nil {
+						finishRefusal = err.Error()
+						break
+					}
+					if out != "" {
+						resultText = out
+					}
 				}
 				// Answer every call of this round, so the stored conversation never
 				// ends on tool calls without results: a later run replaying it would
 				// otherwise see an announced action without its outcome.
 				for _, other := range response.ToolCalls() {
-					content := "not executed — the run ended with the done tool"
+					content := "not executed — the run ended with the " + r.config.finishTool() + " tool"
 					if other.ID == tc.ID {
 						content = "Accepted."
 					}
@@ -177,7 +235,13 @@ func (r *Runner) Run(ctx context.Context, initialPrompt string) (RunResult, erro
 		for _, tc := range response.ToolCalls() {
 			r.reporter.OnToolCall(ctx, tc.Name, tc.Input)
 
-			output, execErr := r.tools.Execute(ctx, r.workspace, tc.Name, tc.Input)
+			var output string
+			var execErr error
+			if tc.Name == r.config.finishTool() && finishRefusal != "" {
+				execErr = fmt.Errorf("cannot finish yet: %s", finishRefusal)
+			} else {
+				output, execErr = r.tools.Execute(ctx, r.workspace, tc.Name, tc.Input)
+			}
 
 			isError := execErr != nil
 			resultContent := output

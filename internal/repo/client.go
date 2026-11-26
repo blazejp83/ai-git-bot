@@ -56,6 +56,13 @@ type Client interface {
 	// GetPRHead returns the live head of a pull request.
 	GetPRHead(ctx context.Context, owner, repo string, prNum int64) (PRHead, error)
 
+	// SubmitReview posts a review body with a formal decision on commitSHA.
+	// bodyPosted reports whether the body reached the PR even when the
+	// decision itself failed.
+	SubmitReview(ctx context.Context, owner, repo string, prNum int64, body string, event ReviewEvent, commitSHA string) (bodyPosted bool, err error)
+	// FileLink is a web link to lines of a file at a commit (start 0 = no lines).
+	FileLink(owner, repo, sha, path string, start, end int) string
+
 	// FormatPRRef formats a PR/MR reference for comments (e.g. "#1" or "!1").
 	FormatPRRef(prNum int64) string
 }

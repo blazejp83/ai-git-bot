@@ -9,6 +9,24 @@ import (
 	"net/http"
 )
 
+// HTTPError is a response with a non-2xx status: the request reached the
+// provider and was answered. Any other error means the outcome is unknown.
+type HTTPError struct {
+	Status int
+	Body   string
+}
+
+func (e *HTTPError) Error() string {
+	body := e.Body
+	if len(body) > 500 {
+		body = body[:500] + "…"
+	}
+	if body == "" {
+		return fmt.Sprintf("HTTP %d", e.Status)
+	}
+	return fmt.Sprintf("HTTP %d: %s", e.Status, body)
+}
+
 // httpDo performs an HTTP request and returns the response body.
 func httpDo(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body any) ([]byte, int, error) {
 	var reqBody io.Reader
@@ -49,7 +67,7 @@ func httpJSON[T any](ctx context.Context, client *http.Client, method, url strin
 		return zero, err
 	}
 	if status < 200 || status >= 300 {
-		return zero, fmt.Errorf("HTTP %d: %s", status, string(respBody))
+		return zero, &HTTPError{Status: status, Body: string(respBody)}
 	}
 	var result T
 	if err := json.Unmarshal(respBody, &result); err != nil {
@@ -65,19 +83,19 @@ func httpText(ctx context.Context, client *http.Client, method, url string, head
 		return "", err
 	}
 	if status < 200 || status >= 300 {
-		return "", fmt.Errorf("HTTP %d: %s", status, string(respBody))
+		return "", &HTTPError{Status: status, Body: string(respBody)}
 	}
 	return string(respBody), nil
 }
 
 // httpNoBody performs an HTTP request and discards the body.
 func httpNoBody(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body any) error {
-	_, status, err := httpDo(ctx, client, method, url, headers, body)
+	respBody, status, err := httpDo(ctx, client, method, url, headers, body)
 	if err != nil {
 		return err
 	}
 	if status < 200 || status >= 300 {
-		return fmt.Errorf("HTTP %d", status)
+		return &HTTPError{Status: status, Body: string(respBody)}
 	}
 	return nil
 }

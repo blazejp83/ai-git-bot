@@ -19,6 +19,7 @@ import (
 	"github.com/tmseidel/ai-git-bot/internal/prompt"
 	"github.com/tmseidel/ai-git-bot/internal/repo"
 	"github.com/tmseidel/ai-git-bot/internal/runner"
+	"github.com/tmseidel/ai-git-bot/internal/structreview"
 	"github.com/tmseidel/ai-git-bot/internal/webhook"
 )
 
@@ -57,15 +58,19 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var aiIntegrationID, gitIntegrationID int64
 	var agentEnabled bool
 	var botPrompt, shellAllowlist, prTargets sql.NullString
+	var structured bool
+	var maxBlockers, maxMedium, maxLow sql.NullInt64
 	var maxTurnsReview, maxTurnsImpl sql.NullInt64
 
 	err := h.db.QueryRow(`
 		SELECT b.id, b.name, b.username, gi.provider_type, b.ai_integration_id, b.git_integration_id,
-		       b.agent_enabled, b.prompt, b.max_turns_review, b.max_turns_implementation, b.shell_allowlist, b.pr_target_branches
+		       b.agent_enabled, b.prompt, b.max_turns_review, b.max_turns_implementation, b.shell_allowlist, b.pr_target_branches,
+		       b.structured_review, b.review_max_blockers, b.review_max_medium, b.review_max_low
 		FROM bots b
 		JOIN git_integrations gi ON b.git_integration_id = gi.id
 		WHERE b.webhook_secret = ? AND b.enabled = 1
-	`, secret).Scan(&botID, &botName, &botUsername, &providerType, &aiIntegrationID, &gitIntegrationID, &agentEnabled, &botPrompt, &maxTurnsReview, &maxTurnsImpl, &shellAllowlist, &prTargets)
+	`, secret).Scan(&botID, &botName, &botUsername, &providerType, &aiIntegrationID, &gitIntegrationID, &agentEnabled, &botPrompt, &maxTurnsReview, &maxTurnsImpl, &shellAllowlist, &prTargets,
+		&structured, &maxBlockers, &maxMedium, &maxLow)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ignored"})
@@ -163,6 +168,10 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if prTargets.Valid {
 		bs.prTargetBranches = parseAllowlist(prTargets.String)
 	}
+	bs.structuredReview = structured
+	bs.thresholds = structreview.Thresholds{
+		MaxBlockers: intPtr(maxBlockers), MaxMedium: intPtr(maxMedium), MaxLow: intPtr(maxLow),
+	}
 
 	go h.dispatch(bs, event)
 
@@ -188,6 +197,10 @@ type botSettings struct {
 	maxTurnsReview int      // 0 = use global default
 	maxTurnsImpl   int      // 0 = use global default
 	shellAllowlist []string // nil = use global default
+	// structuredReview records findings through tools and decides formally
+	// (see internal/structreview); off means the free-text review.
+	structuredReview bool
+	thresholds       structreview.Thresholds
 	// prTargetBranches limits automatic reviews to PRs into these base
 	// branches (glob patterns); nil = all branches.
 	prTargetBranches []string
@@ -300,7 +313,7 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 				switch trigger {
 				case "review", "fullreview":
 					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
-					h.runReview(ctx, aiClient, repoClient, owner, repoName, prNum, event.PullRequest, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID)
+					h.runReview(ctx, aiClient, repoClient, owner, repoName, prNum, event.PullRequest, promptText, bs, allowlist)
 				case "investigate", "explore", "deep":
 					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
 					h.runAgenticFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, body, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID, commenter, prAuthor)
@@ -347,7 +360,7 @@ func (h *WebhookHandler) reviewOnce(ctx context.Context, bs botSettings, event *
 		slog.Info("Review already triggered for this commit; skipping", "pr", pr.Number, "sha", pr.Head.SHA, "action", event.Action)
 		return
 	}
-	if !h.runReview(ctx, aiClient, repoClient, event.Repo.Owner, event.Repo.Name, pr.Number, pr, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID) {
+	if !h.runReview(ctx, aiClient, repoClient, event.Repo.Owner, event.Repo.Name, pr.Number, pr, promptText, bs, allowlist) {
 		h.debouncer.release(key, pr.Head.SHA)
 	}
 }
@@ -356,7 +369,11 @@ func (h *WebhookHandler) reviewOnce(ctx context.Context, bs botSettings, event *
 // it was skipped or failed, so the debounce claim can be given back).
 // pr may be nil (e.g. a review requested from a GitHub issue comment); the
 // prompt then has no title or description, and the base branch is the default branch.
-func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, pr *webhook.PullRequest, promptText string, maxTurns int, shellAllowlist []string, gitIntID int64) bool {
+func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, pr *webhook.PullRequest, promptText string, bs botSettings, shellAllowlist []string) bool {
+	if bs.structuredReview {
+		return h.runStructuredReview(ctx, aiClient, repoClient, owner, repoName, prNum, pr, promptText, bs, shellAllowlist)
+	}
+	maxTurns, gitIntID := bs.reviewTurns(20), bs.gitIntID
 	title, body, baseBranch := "", "", ""
 	if pr != nil {
 		title, body, baseBranch = pr.Title, pr.Body, pr.Base.RefName
@@ -420,9 +437,7 @@ When you're done, call the "done" tool with your review as markdown.`, title, bo
 
 	// Don't publish a review of a commit the pull request no longer points at:
 	// the push that replaced it triggers its own review.
-	if live, err := repoClient.GetPRHead(ctx, owner, repoName, prNum); err == nil &&
-		live.SHA != "" && reviewedSHA != "" && live.SHA != reviewedSHA {
-		slog.Info("PR head moved during review; not publishing", "pr", prNum, "reviewed", reviewedSHA, "live", live.SHA)
+	if headMoved(ctx, repoClient, owner, repoName, prNum, reviewedSHA) {
 		session.SetStatus("STALE")
 		return true
 	}
@@ -481,6 +496,24 @@ func (h *WebhookHandler) prepareReviewWorkspace(ctx context.Context, repoClient 
 		return ws, reviewedSHA, false, nil
 	}
 	return ws, sha, true, nil
+}
+
+// headMoved reports whether the PR's live head is no longer the reviewed commit.
+func headMoved(ctx context.Context, repoClient repo.Client, owner, repoName string, prNum int64, reviewedSHA string) bool {
+	live, err := repoClient.GetPRHead(ctx, owner, repoName, prNum)
+	if err == nil && live.SHA != "" && reviewedSHA != "" && live.SHA != reviewedSHA {
+		slog.Info("PR head moved during review; not publishing", "pr", prNum, "reviewed", reviewedSHA, "live", live.SHA)
+		return true
+	}
+	return false
+}
+
+func intPtr(v sql.NullInt64) *int {
+	if !v.Valid {
+		return nil
+	}
+	n := int(v.Int64)
+	return &n
 }
 
 func workspaceNote(onHead bool) string {

@@ -68,6 +68,34 @@
                     <div class="form-text">Comma-separated target (base) branches whose pull requests are reviewed automatically when opened or updated; <code>*</code> and <code>?</code> work as wildcards. Leave empty to review every pull request. An explicit <code>@bot #review</code> comment always works.</div>
                 </div>
 
+                <!-- Structured review -->
+                <div class="col-12">
+                    <div class="card bg-light">
+                        <div class="card-body py-2">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="structuredReview" name="structuredReview" value="true"{{if .Bot.StructuredReview}} checked{{end}}/>
+                                <label class="form-check-label" for="structuredReview"><strong>Structured review</strong></label>
+                            </div>
+                            <div class="form-text mb-2">The reviewer records findings with a severity (BLOCKER, MEDIUM, LOW) and exact lines; the bot posts them in a fixed layout and approves or requests changes based on the limits below. Off: a free-text review comment.</div>
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <label for="maxBlockers" class="form-label">Max BLOCKER findings to approve</label>
+                                    <input type="number" class="form-control" id="maxBlockers" name="maxBlockers" min="0" value="{{.Bot.MaxBlockers}}" placeholder="No limit"/>
+                                </div>
+                                <div class="col-md-4">
+                                    <label for="maxMedium" class="form-label">Max MEDIUM findings to approve</label>
+                                    <input type="number" class="form-control" id="maxMedium" name="maxMedium" min="0" value="{{.Bot.MaxMedium}}" placeholder="No limit"/>
+                                </div>
+                                <div class="col-md-4">
+                                    <label for="maxLow" class="form-label">Max LOW findings to approve</label>
+                                    <input type="number" class="form-control" id="maxLow" name="maxLow" min="0" value="{{.Bot.MaxLow}}" placeholder="No limit"/>
+                                </div>
+                            </div>
+                            <div class="form-text">More findings than a limit → <em>request changes</em>; within all limits → <em>approve</em>. Leave all three blank to only comment. An inconclusive review always only comments. If the provider refuses a formal review (e.g. the bot approving its own PR), the review is posted as a comment.</div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Turn Limit Overrides -->
                 <div class="col-12 mt-3">
                     <div class="card bg-light">
