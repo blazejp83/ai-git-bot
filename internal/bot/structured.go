@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/tmseidel/ai-git-bot/internal/ai"
+	"github.com/tmseidel/ai-git-bot/internal/hooks"
 	"github.com/tmseidel/ai-git-bot/internal/repo"
 	"github.com/tmseidel/ai-git-bot/internal/runner"
 	"github.com/tmseidel/ai-git-bot/internal/structreview"
@@ -19,6 +20,7 @@ import (
 // tools, then publishes the stored review with a decision computed from its
 // findings. It reports whether a review ran (see runReview).
 func (h *WebhookHandler) runStructuredReview(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, prNum int64, pr *webhook.PullRequest, promptText string, bs botSettings, shellAllowlist []string) bool {
+	h.emit(bs, owner, repoName, hooks.ReviewStarted, map[string]any{"pr": prNum, "structured": true})
 	title, body, baseBranch := "", "", ""
 	if pr != nil {
 		title, body, baseBranch = pr.Title, pr.Body, pr.Base.RefName
@@ -84,10 +86,12 @@ func (h *WebhookHandler) runStructuredReview(ctx context.Context, aiClient ai.Cl
 		slog.Error("Structured review failed", "err", err, "review", review.ID)
 		h.recordError(bs.id, "Review failed: "+err.Error())
 		session.SetStatus("FAILED")
+		h.emit(bs, owner, repoName, hooks.ReviewFailed, map[string]any{"pr": prNum, "structured": true, "error": err.Error()})
 		return false
 	}
 	if headMoved(ctx, repoClient, owner, repoName, prNum, reviewedSHA) {
 		session.SetStatus("STALE")
+		h.emit(bs, owner, repoName, hooks.ReviewCompleted, map[string]any{"pr": prNum, "structured": true, "published": false, "reason": "the pull request moved on during the review"})
 		return true
 	}
 
@@ -118,6 +122,11 @@ func (h *WebhookHandler) runStructuredReview(ctx context.Context, aiClient ai.Cl
 	publishReview(ctx, repoClient, store, rv, link, decision, owner, repoName, prNum, reviewedSHA)
 	store.Finalize(rv.ID, decision)
 	session.SetStatus("COMPLETED")
+	counts := rv.Counts()
+	h.emit(bs, owner, repoName, hooks.ReviewCompleted, map[string]any{
+		"pr": prNum, "structured": true, "published": true, "review": rv.Ref(), "decision": decision, "commit": reviewedSHA,
+		"inconclusive": rv.Inconclusive, "findings": map[string]int{"blocker": counts[structreview.Blocker], "medium": counts[structreview.Medium], "low": counts[structreview.Low]},
+	})
 	slog.Info("Structured review completed", "pr", prNum, "review", rv.Ref(), "decision", decision,
 		"findings", len(rv.Active()), "turns", result.TurnCount)
 	return true

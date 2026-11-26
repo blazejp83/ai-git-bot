@@ -12,6 +12,7 @@ import (
 	"github.com/tmseidel/ai-git-bot/internal/bot"
 	"github.com/tmseidel/ai-git-bot/internal/config"
 	"github.com/tmseidel/ai-git-bot/internal/encrypt"
+	"github.com/tmseidel/ai-git-bot/internal/hooks"
 	"github.com/tmseidel/ai-git-bot/internal/prompt"
 	"github.com/tmseidel/ai-git-bot/internal/usage"
 	"github.com/tmseidel/ai-git-bot/internal/web"
@@ -30,6 +31,10 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 	aiHandlers := web.NewAiHandlers(tpl, database, enc)
 	botHandlers := web.NewBotHandlers(tpl, database, enc)
 	gitHandlers := web.NewGitHandlers(tpl, database, enc)
+
+	hookService := hooks.NewService(database, enc)
+	go hookService.Run(nil)
+	hookHandlers := web.NewHookHandlers(tpl, database, enc, hookService)
 
 	usageStore := usage.NewStore(database)
 	handlers.SetUsageStore(usageStore)
@@ -63,6 +68,7 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 	promptSvc := prompt.NewService(cfg.PromptsDir)
 	webhookHandler := bot.NewWebhookHandler(database, enc, promptSvc, cfg)
 	webhookHandler.SetUsageRecorder(usageStore)
+	webhookHandler.SetHooks(hookService)
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/webhook/{secret}", webhookHandler.Handle)
 	})
@@ -75,6 +81,16 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 		})
 		r.Get("/dashboard", handlers.Dashboard)
+
+		// Outgoing hooks
+		r.Get("/hooks", hookHandlers.List)
+		r.Get("/hooks/new", hookHandlers.NewForm)
+		r.Get("/hooks/{id}/edit", hookHandlers.EditForm)
+		r.Post("/hooks/save", hookHandlers.Save)
+		r.Post("/hooks/{id}/delete", hookHandlers.Delete)
+		r.Post("/hooks/{id}/test", hookHandlers.Test)
+		r.Get("/hooks/{id}/deliveries", hookHandlers.Deliveries)
+		r.Post("/hooks/deliveries/{id}/retry", hookHandlers.Retry)
 
 		// AI usage
 		r.Get("/usage", usageHandlers.List)

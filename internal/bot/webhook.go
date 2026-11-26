@@ -18,6 +18,7 @@ import (
 	"github.com/tmseidel/ai-git-bot/internal/ai"
 	"github.com/tmseidel/ai-git-bot/internal/config"
 	"github.com/tmseidel/ai-git-bot/internal/encrypt"
+	"github.com/tmseidel/ai-git-bot/internal/hooks"
 	"github.com/tmseidel/ai-git-bot/internal/prompt"
 	"github.com/tmseidel/ai-git-bot/internal/repo"
 	"github.com/tmseidel/ai-git-bot/internal/runner"
@@ -36,6 +37,7 @@ type WebhookHandler struct {
 	debouncer     *reviewDebouncer
 	orchMu        sync.Mutex
 	orch          *workflow.Orchestrator
+	hooks         *hooks.Service
 	// cloneURLOverride replaces the integration's clone URL (tests only).
 	cloneURLOverride func(owner, repoName string) string
 }
@@ -50,6 +52,17 @@ func NewWebhookHandler(db *sql.DB, enc *encrypt.Service, promptSvc *prompt.Servi
 		promptService: promptSvc,
 		debouncer:     newReviewDebouncer(),
 	}
+}
+
+// SetHooks sends review and implementation events to the outgoing hooks.
+func (h *WebhookHandler) SetHooks(s *hooks.Service) { h.hooks = s }
+
+// emit publishes an event to the outgoing hooks (no-op without them).
+func (h *WebhookHandler) emit(bs botSettings, owner, repoName, eventType string, data map[string]any) {
+	if h.hooks == nil {
+		return
+	}
+	h.hooks.Publish(hooks.Event{Type: eventType, BotID: bs.id, Bot: bs.name, Repo: owner + "/" + repoName, Data: data})
 }
 
 // SetUsageRecorder records the token usage and errors of every AI call the bots make.
@@ -428,6 +441,7 @@ func (h *WebhookHandler) runReview(ctx context.Context, aiClient ai.Client, repo
 		return h.runStructuredReview(ctx, aiClient, repoClient, owner, repoName, prNum, pr, promptText, bs, shellAllowlist)
 	}
 	maxTurns, gitIntID := bs.reviewTurns(20), bs.gitIntID
+	h.emit(bs, owner, repoName, hooks.ReviewStarted, map[string]any{"pr": prNum, "structured": false})
 	title, body, baseBranch := "", "", ""
 	if pr != nil {
 		title, body, baseBranch = pr.Title, pr.Body, pr.Base.RefName
@@ -491,6 +505,7 @@ When you're done, call the "done" tool with your review as markdown.`, title, bo
 		slog.Error("Review runner failed", "err", err)
 		h.recordError(0, "Review failed: "+err.Error())
 		session.SetStatus("FAILED")
+		h.emit(bs, owner, repoName, hooks.ReviewFailed, map[string]any{"pr": prNum, "error": err.Error()})
 		return false
 	}
 
@@ -498,6 +513,7 @@ When you're done, call the "done" tool with your review as markdown.`, title, bo
 	// the push that replaced it triggers its own review.
 	if headMoved(ctx, repoClient, owner, repoName, prNum, reviewedSHA) {
 		session.SetStatus("STALE")
+		h.emit(bs, owner, repoName, hooks.ReviewCompleted, map[string]any{"pr": prNum, "structured": false, "published": false, "reason": "the pull request moved on during the review"})
 		return true
 	}
 
@@ -507,6 +523,8 @@ When you're done, call the "done" tool with your review as markdown.`, title, bo
 	}
 
 	session.SetStatus("COMPLETED")
+	h.emit(bs, owner, repoName, hooks.ReviewCompleted, map[string]any{"pr": prNum, "structured": false, "published": result.Text != "",
+		"commit": reviewedSHA, "turns": result.TurnCount})
 	slog.Info("Review completed", "pr", prNum, "turns", result.TurnCount)
 	return true
 }

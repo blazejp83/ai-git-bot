@@ -13,6 +13,8 @@ import (
 
 	"github.com/tmseidel/ai-git-bot/internal/ai"
 	"github.com/tmseidel/ai-git-bot/internal/config"
+	"github.com/tmseidel/ai-git-bot/internal/encrypt"
+	"github.com/tmseidel/ai-git-bot/internal/hooks"
 	"github.com/tmseidel/ai-git-bot/internal/repo"
 	"github.com/tmseidel/ai-git-bot/internal/runner"
 	"github.com/tmseidel/ai-git-bot/internal/webhook"
@@ -145,8 +147,12 @@ func TestImplementationRunAndContinuation(t *testing.T) {
 	store := reviewStore(t)
 	h := &WebhookHandler{db: store.DB(), cfg: &config.Config{AgentBranchPrefix: "ai-agent/", AgentMaxTokens: 1000},
 		cloneURLOverride: func(string, string) string { return "file://" + bare }}
-	bs := botSettings{id: 1, agentEnabled: true, identity: newBotIdentity(repo.Account{ID: "42", Login: "ai-bot"}, "")}
+	bs := botSettings{id: 1, name: "coder", agentEnabled: true, identity: newBotIdentity(repo.Account{ID: "42", Login: "ai-bot"}, "")}
 	provider := &fakeGitProvider{}
+	// A hook subscribed to the implementation events records what is emitted.
+	h.SetHooks(hooks.NewService(store.DB(), encrypt.New("k")))
+	store.DB().Exec(`INSERT INTO hook_endpoints (name, url, event_types, enabled, created_at, updated_at)
+		VALUES ('h', 'http://127.0.0.1:1/', 'implementation.started,implementation.completed,implementation.failed', 1, datetime(), datetime())`)
 
 	call := func(id, name string, in map[string]any) *ai.ChatResponse {
 		return &ai.ChatResponse{Content: []ai.ContentBlock{{Type: "tool_use", ToolCall: &ai.ToolCall{ID: id, Name: name, Input: in}}}}
@@ -212,5 +218,21 @@ func TestImplementationRunAndContinuation(t *testing.T) {
 	}
 	if impl, _ := runner.LatestImplementation(store.DB(), "me", "app", 5); impl.Status != "PR_CREATED" || impl.PRNumber != 9 {
 		t.Errorf("session after continuation = %+v", impl)
+	}
+
+	rows, _ := store.DB().Query(`SELECT event_type, payload FROM hook_deliveries ORDER BY id`)
+	var events []string
+	var lastPayload string
+	for rows.Next() {
+		var ev string
+		rows.Scan(&ev, &lastPayload)
+		events = append(events, ev)
+	}
+	rows.Close()
+	if strings.Join(events, ",") != "implementation.started,implementation.completed,implementation.started,implementation.completed" {
+		t.Errorf("emitted events = %v", events)
+	}
+	if !strings.Contains(lastPayload, `"continuation":true`) || !strings.Contains(lastPayload, `"bot":"coder"`) || !strings.Contains(lastPayload, `"fullName":"me/app"`) {
+		t.Errorf("last payload = %s", lastPayload)
 	}
 }

@@ -1,0 +1,41 @@
+{{define "title"}}Hook Deliveries - AI Git Bot{{end}}
+
+{{define "content"}}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2><i class="bi bi-list-check"></i> Deliveries · {{.Hook.Name}}</h2>
+    <div>
+        <form action="/hooks/{{.Hook.ID}}/test" method="post" class="d-inline"><button class="btn btn-outline-success"><i class="bi bi-send"></i> Send test event</button></form>
+        <a href="/hooks" class="btn btn-secondary ms-2">Back</a>
+    </div>
+</div>
+<p class="text-muted small">{{.Hook.URL}} · the latest deliveries (times in UTC). Failed deliveries are retried 5 times over about half an hour; reload to see progress.</p>
+<div class="card">
+    <div class="card-body p-0">
+        {{if not .Deliveries}}
+        <p class="text-muted text-center py-4 mb-0">No deliveries yet. Send a test event to check the endpoint.</p>
+        {{else}}
+        <table class="table table-sm align-middle mb-0">
+            <thead class="table-light"><tr><th>Time</th><th>Event</th><th>Status</th><th class="text-end">Attempts</th><th>Response</th><th></th></tr></thead>
+            <tbody>
+                {{range .Deliveries}}
+                <tr>
+                    <td class="text-nowrap small">{{.CreatedAt}}</td>
+                    <td><code>{{.EventType}}</code></td>
+                    <td>
+                        {{if eq .Status "DELIVERED"}}<span class="badge bg-success">Delivered</span>
+                        {{else if eq .Status "FAILED"}}<span class="badge bg-danger">Failed</span>
+                        {{else}}<span class="badge bg-warning text-dark">Pending</span>{{if .Attempts}} <span class="small text-muted">next {{.NextAt}}</span>{{end}}{{end}}
+                    </td>
+                    <td class="text-end">{{.Attempts}}</td>
+                    <td class="small">{{if .StatusCode}}HTTP {{.StatusCode}}{{end}} <span class="text-danger">{{.Error}}</span>
+                        <details><summary class="text-muted">Payload</summary><pre class="small mb-0" style="white-space: pre-wrap;">{{.Payload}}</pre></details>
+                    </td>
+                    <td>{{if ne .Status "DELIVERED"}}<form action="/hooks/deliveries/{{.ID}}/retry" method="post"><button class="btn btn-sm btn-outline-primary">Retry</button></form>{{end}}</td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+        {{end}}
+    </div>
+</div>
+{{end}}

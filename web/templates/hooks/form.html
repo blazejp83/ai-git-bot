@@ -1,0 +1,75 @@
+{{define "title"}}{{if .IsEdit}}Edit{{else}}New{{end}} Hook - AI Git Bot{{end}}
+
+{{define "content"}}
+<h2 class="mb-4"><i class="bi bi-broadcast"></i> {{if .IsEdit}}Edit Hook{{else}}New Hook{{end}}</h2>
+{{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}
+<div class="card">
+    <div class="card-body">
+        <form action="/hooks/save" method="post">
+            {{if .IsEdit}}<input type="hidden" name="id" value="{{.Hook.ID}}"/>{{end}}
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label for="name" class="form-label">Name</label>
+                    <input type="text" class="form-control" id="name" name="name" value="{{.Hook.Name}}" placeholder="e.g. ntfy reviews" required/>
+                </div>
+                <div class="col-md-6">
+                    <label for="url" class="form-label">URL</label>
+                    <input type="url" class="form-control" id="url" name="url" value="{{.Hook.URL}}" placeholder="https://ntfy.example.com/reviews" required/>
+                </div>
+                <div class="col-12">
+                    <label class="form-label">Events</label>
+                    <div>
+                        {{range .EventTypes}}
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" id="ev-{{.}}" name="event.{{.}}" value="true"{{if index $.Hook.Events .}} checked{{end}}/>
+                            <label class="form-check-label" for="ev-{{.}}"><code>{{.}}</code></label>
+                        </div>
+                        {{end}}
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <label for="botId" class="form-label">Only for bot</label>
+                    <select class="form-select" id="botId" name="botId">
+                        <option value="0">All bots</option>
+                        {{range .Bots}}<option value="{{.ID}}"{{if eq .ID $.Hook.BotID}} selected{{end}}>{{.Name}}</option>{{end}}
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label for="repoFilter" class="form-label">Only for repositories</label>
+                    <input type="text" class="form-control" id="repoFilter" name="repoFilter" value="{{.Hook.RepoFilter}}" placeholder="All repositories (or owner/name, owner/*)"/>
+                </div>
+                <div class="col-md-6">
+                    <label for="secret" class="form-label">Signing secret</label>
+                    <input type="password" class="form-control" id="secret" name="secret" placeholder="{{if .Hook.HasSecret}}Set — leave blank to keep{{else}}Optional{{end}}"/>
+                    <div class="form-text">Each request then carries <code>X-EventHook-Signature-256: sha256=&lt;HMAC of the body&gt;</code>.</div>
+                    {{if .Hook.HasSecret}}
+                    <div class="form-check mt-1">
+                        <input class="form-check-input" type="checkbox" id="removeSecret" name="removeSecret" value="true"/>
+                        <label class="form-check-label" for="removeSecret">Remove the secret</label>
+                    </div>
+                    {{end}}
+                </div>
+                <div class="col-md-6">
+                    <label for="headers" class="form-label">Extra headers (JSON)</label>
+                    <textarea class="form-control font-monospace" id="headers" name="headers" rows="2" placeholder="{{if .Hook.HasHeaders}}Set — leave blank to keep, {} to remove{{else}}{&quot;Authorization&quot;: &quot;Bearer …&quot;}{{end}}"></textarea>
+                    <div class="form-text">Stored encrypted and never shown again.</div>
+                </div>
+                <div class="col-12">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="enabled" name="enabled" value="true"{{if .Hook.Enabled}} checked{{end}}/>
+                        <label class="form-check-label" for="enabled">Enabled</label>
+                    </div>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="skipTls" name="skipTls" value="true"{{if .Hook.SkipTLS}} checked{{end}}/>
+                        <label class="form-check-label" for="skipTls">Skip TLS certificate checks (self-signed endpoints on your network only)</label>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-4">
+                <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+                <a href="/hooks" class="btn btn-secondary ms-2"><i class="bi bi-x-lg"></i> Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{{end}}
