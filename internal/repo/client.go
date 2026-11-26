@@ -56,6 +56,11 @@ type Client interface {
 	// GetPRHead returns the live head of a pull request.
 	GetPRHead(ctx context.Context, owner, repo string, prNum int64) (PRHead, error)
 
+	// GetIssue returns an issue's title and description.
+	GetIssue(ctx context.Context, owner, repo string, num int64) (IssueDetails, error)
+	// ListIssueComments returns an issue's discussion, oldest first.
+	ListIssueComments(ctx context.Context, owner, repo string, num int64) ([]IssueComment, error)
+
 	// SubmitReview posts a review body with a formal decision on commitSHA.
 	// bodyPosted reports whether the body reached the PR even when the
 	// decision itself failed.

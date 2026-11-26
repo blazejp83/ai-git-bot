@@ -31,6 +31,8 @@ type WebhookHandler struct {
 	repoFactory   *repo.ClientFactory
 	promptService *prompt.Service
 	debouncer     *reviewDebouncer
+	// cloneURLOverride replaces the integration's clone URL (tests only).
+	cloneURLOverride func(owner, repoName string) string
 }
 
 func NewWebhookHandler(db *sql.DB, enc *encrypt.Service, promptSvc *prompt.Service, cfg *config.Config) *WebhookHandler {
@@ -292,6 +294,9 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 		}
 
 	case "created":
+		if event.Comment != nil && hasBotMention && h.routeToImplementation(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs, allowlist) {
+			return
+		}
 		if event.Comment != nil && hasBotMention {
 			prNum := resolvePRNumber(event)
 			if prNum > 0 {
@@ -339,7 +344,7 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 				slog.Info("Not starting the agent again", "issue", event.Issue.Number, "reason", reason)
 				return
 			}
-			h.runImplementation(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs.implTurns(50), allowlist, bs.gitIntID)
+			h.runImplementation(ctx, aiClient, repoClient, owner, repoName, event.Issue, promptText, bs, allowlist)
 		}
 
 	case "closed":
@@ -577,171 +582,56 @@ func (h *WebhookHandler) runReviewFollowup(ctx context.Context, aiClient ai.Clie
 	repoClient.PostComment(ctx, owner, repoName, prNum, comment)
 }
 
-func (h *WebhookHandler) runImplementation(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, maxTurns int, shellAllowlist []string, gitIntID int64) {
-	issue := event.Issue
+// routeToImplementation hands a comment mentioning the bot to the
+// implementation agent when it asks for more work on an issue the agent
+// already pushed to, or on a pull request the agent opened. Review commands
+// (#review, re-review, #investigate) keep their meaning. It reports whether
+// the comment was handled.
+func (h *WebhookHandler) routeToImplementation(ctx context.Context, aiClient ai.Client, repoClient repo.Client, owner, repoName string, event *webhook.Event, promptText string, bs botSettings, allowlist []string) bool {
+	if !bs.agentEnabled {
+		return false
+	}
+	prev, ok := h.implementationTarget(owner, repoName, event, bs)
+	if !ok {
+		return false
+	}
+	issueNum := prev.Issue
 
-	slog.Info("Starting implementation", "issue", issue.Number, "title", issue.Title)
-
-	repoClient.PostComment(ctx, owner, repoName, issue.Number,
-		"**AI Agent**: I've been assigned to this issue. Setting up workspace...")
-
-	baseBranch, _ := repoClient.GetDefaultBranch(ctx, owner, repoName)
-	if baseBranch == "" {
-		baseBranch = "main"
+	commenter := event.Comment.User
+	if commenter == "" {
+		commenter = event.Sender.Login
+	}
+	if status, updatedAt, ok := runner.LatestStatus(h.db, runner.ModeImplementation, owner, repoName, "issue", issueNum); ok &&
+		status == "IN_PROGRESS" && time.Since(updatedAt) < implementationStaleAfter {
+		repoClient.PostComment(ctx, owner, repoName, resolvePRNumber(event),
+			fmt.Sprintf("**AI Agent**: @%s I'm still working on the previous request for #%d. Mention me again when that is done.", commenter, issueNum))
+		return true
 	}
 
-	cloneURL := h.cloneURL(gitIntID, owner, repoName)
-
-	ws, err := runner.NewWorkspace(ctx, cloneURL, owner, repoName, baseBranch)
-	if err != nil {
-		slog.Error("Failed to create workspace", "err", err)
-		repoClient.PostComment(ctx, owner, repoName, issue.Number,
-			"**AI Agent**: Failed to set up workspace: "+err.Error())
-		return
-	}
-	defer ws.Cleanup()
-
-	session, err := runner.CreateSession(h.db, runner.ModeImplementation, owner, repoName, issue.Number, "issue", promptText)
-	if err != nil {
-		slog.Error("Failed to create runner session", "err", err)
-		return
-	}
-
-	reporter := &runner.CommentReporter{
-		RepoClient: repoClient, Owner: owner, Repo: repoName, Number: issue.Number,
-		Verbose: true,
-	}
-
-	initialPrompt := fmt.Sprintf(`Implement the following issue in this repository.
-
-**Title**: %s
-**Description**: %s
-
-Explore the repository structure, read relevant files, then implement the changes.
-Write files using write_file, and validate your changes by running the build/test commands.
-When you're done, call the "done" tool with a summary of your changes.`, issue.Title, issue.Body)
-
-	r := runner.New(aiClient, ws, reporter, session, runner.Config{
-		Mode:           runner.ModeImplementation,
-		MaxTurns:       maxTurns,
-		SystemPrompt:   promptText,
-		MaxTokens:      h.cfg.AgentMaxTokens,
-		ShellAllowlist: shellAllowlist,
-		ShellTimeout:   300,
-	})
-
-	result, err := r.Run(ctx, initialPrompt)
-	if err != nil {
-		slog.Error("Implementation runner failed", "err", err)
-		repoClient.PostComment(ctx, owner, repoName, issue.Number,
-			"**AI Agent**: Implementation failed: "+err.Error())
-		session.SetStatus("FAILED")
-		return
-	}
-
-	// Collect changed files from workspace and commit them via repo API
-	changes, err := ws.Changes()
-	if err != nil {
-		repoClient.PostComment(ctx, owner, repoName, issue.Number,
-			"**AI Agent**: Could not list the changed files: "+err.Error())
-		session.SetStatus("FAILED")
-		return
-	}
-	if len(changes) == 0 {
-		repoClient.PostComment(ctx, owner, repoName, issue.Number,
-			"**AI Agent**: No files were changed. "+result.Text)
-		session.SetStatus("COMPLETED")
-		return
-	}
-
-	// Create branch and commit changes
-	branchName := h.cfg.AgentBranchPrefix + fmt.Sprintf("issue-%d", issue.Number)
-	session.SetBranch(branchName)
-
-	if err := repoClient.CreateBranch(ctx, owner, repoName, branchName, baseBranch); err != nil {
-		repoClient.PostComment(ctx, owner, repoName, issue.Number,
-			"**AI Agent**: Failed to create branch: "+err.Error())
-		session.SetStatus("FAILED")
-		return
-	}
-
-	committed, failed := commitChanges(ctx, repoClient, ws, owner, repoName, baseBranch, branchName, issue.Number, changes)
-	if len(committed) == 0 {
-		repoClient.PostComment(ctx, owner, repoName, issue.Number,
-			"**AI Agent**: Could not commit any of the changes:\n"+failed)
-		session.SetStatus("FAILED")
-		return
-	}
-
-	// Create PR
-	prTitle := fmt.Sprintf("AI Agent: %s (fixes #%d)", issue.Title, issue.Number)
-	prBody := fmt.Sprintf("Fixes #%d\n\n%s\n\n---\n*Generated by AI Agent*", issue.Number, result.Text)
-	prNumber, err := repoClient.CreatePR(ctx, owner, repoName, prTitle, prBody, branchName, baseBranch)
-	if err != nil {
-		repoClient.PostComment(ctx, owner, repoName, issue.Number,
-			"**AI Agent**: Failed to create PR: "+err.Error())
-		session.SetStatus("FAILED")
-		return
-	}
-
-	session.SetPR(prNumber)
-	session.SetStatus("PR_CREATED")
-
-	var fileList strings.Builder
-	for _, c := range committed {
-		if c.Deleted {
-			fmt.Fprintf(&fileList, "- `%s` (deleted)\n", c.Path)
-		} else {
-			fmt.Fprintf(&fileList, "- `%s`\n", c.Path)
-		}
-	}
-	msg := fmt.Sprintf("**AI Agent**: Implementation complete! Created #%d\n\n**Files changed** (%d):\n%s",
-		prNumber, len(committed), fileList.String())
-	if failed != "" {
-		msg += "\n**Not committed** (the pull request is incomplete):\n" + failed
-	}
-	repoClient.PostComment(ctx, owner, repoName, issue.Number, msg)
-
-	slog.Info("Implementation completed", "issue", issue.Number, "pr", prNumber, "turns", result.TurnCount)
+	repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
+	h.continueImplementation(ctx, aiClient, repoClient, owner, repoName, prev, event.Comment, commenter, promptText, bs, allowlist)
+	return true
 }
 
-// commitChanges commits the workspace changes to branch through the provider
-// API, one commit per file: updates and new files with their content,
-// deletions with DeleteFile. It returns what was committed and a Markdown list
-// of the files that could not be.
-func commitChanges(ctx context.Context, repoClient repo.Client, ws *runner.Workspace, owner, repoName, baseBranch, branch string, issueNum int64, changes []runner.FileChange) (committed []runner.FileChange, failed string) {
-	var failures strings.Builder
-	fail := func(path string, err error) {
-		slog.Warn("Failed to commit file", "path", path, "err", err)
-		fmt.Fprintf(&failures, "- `%s`: %v\n", path, err)
+// implementationTarget finds the earlier implementation run a comment asks
+// to continue: the issue commented on, or the issue behind a pull request the
+// agent opened. Review commands never continue an implementation.
+func (h *WebhookHandler) implementationTarget(owner, repoName string, event *webhook.Event, bs botSettings) (runner.Implementation, bool) {
+	body := event.Comment.Body
+	if extractTrigger(body) != "" || isReviewAgainRequest(bs.identity.stripMentions(body)) {
+		return runner.Implementation{}, false
 	}
-	for _, c := range changes {
-		sha, _ := repoClient.GetFileSHA(ctx, owner, repoName, c.Path, baseBranch)
-		if c.Deleted {
-			if sha == "" {
-				continue // not on the base branch: nothing to delete
-			}
-			msg := fmt.Sprintf("agent: delete %s (issue #%d)", c.Path, issueNum)
-			if err := repoClient.DeleteFile(ctx, owner, repoName, c.Path, msg, branch, sha); err != nil {
-				fail(c.Path, err)
-				continue
-			}
-			committed = append(committed, c)
-			continue
+	var issueNum int64
+	if event.Issue != nil && !event.Issue.IsPR && event.PullRequest == nil {
+		issueNum = event.Issue.Number
+	} else {
+		n, ok := runner.ImplementationForPR(h.db, owner, repoName, resolvePRNumber(event))
+		if !ok {
+			return runner.Implementation{}, false
 		}
-		content, err := ws.ReadFile(c.Path)
-		if err != nil {
-			fail(c.Path, err)
-			continue
-		}
-		msg := fmt.Sprintf("agent: update %s (issue #%d)", c.Path, issueNum)
-		if err := repoClient.CreateOrUpdateFile(ctx, owner, repoName, c.Path, content, msg, branch, sha); err != nil {
-			fail(c.Path, err)
-			continue
-		}
-		committed = append(committed, c)
+		issueNum = n
 	}
-	return committed, failures.String()
+	return runner.LatestImplementation(h.db, owner, repoName, issueNum)
 }
 
 // implementationStaleAfter is how long an IN_PROGRESS implementation session
@@ -894,6 +784,9 @@ func toSimpleMessages(msgs []ai.ConversationMessage) []ai.Message {
 }
 
 func (h *WebhookHandler) cloneURL(gitIntID int64, owner, repoName string) string {
+	if h.cloneURLOverride != nil {
+		return h.cloneURLOverride(owner, repoName)
+	}
 	db := h.db
 	enc := h.enc
 	var providerType, baseURL, token string

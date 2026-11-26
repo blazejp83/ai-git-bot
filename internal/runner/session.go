@@ -57,6 +57,45 @@ func LatestStatus(db *sql.DB, mode Mode, owner, repo, targetType string, targetN
 	return status, updatedAt, true
 }
 
+// Implementation describes the newest implementation run for an issue.
+type Implementation struct {
+	Issue    int64
+	Branch   string
+	PRNumber int64
+	Status   string
+}
+
+// LatestImplementation returns the newest implementation run for an issue
+// that pushed a branch; ok is false when there is none.
+func LatestImplementation(db *sql.DB, owner, repo string, issue int64) (Implementation, bool) {
+	impl := Implementation{Issue: issue}
+	var branch sql.NullString
+	var pr sql.NullInt64
+	err := db.QueryRow(`
+		SELECT branch_name, pr_number, status FROM runner_sessions
+		WHERE mode = ? AND repo_owner = ? AND repo_name = ? AND target_type = 'issue' AND target_number = ?
+		  AND branch_name IS NOT NULL AND branch_name != ''
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, string(ModeImplementation), owner, repo, issue).Scan(&branch, &pr, &impl.Status)
+	if err != nil {
+		return Implementation{}, false
+	}
+	impl.Branch, impl.PRNumber = branch.String, pr.Int64
+	return impl, true
+}
+
+// ImplementationForPR returns the issue whose implementation opened a pull
+// request; ok is false for pull requests the agent did not open.
+func ImplementationForPR(db *sql.DB, owner, repo string, pr int64) (int64, bool) {
+	var issue int64
+	err := db.QueryRow(`
+		SELECT target_number FROM runner_sessions
+		WHERE mode = ? AND repo_owner = ? AND repo_name = ? AND target_type = 'issue' AND pr_number = ?
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, string(ModeImplementation), owner, repo, pr).Scan(&issue)
+	return issue, err == nil
+}
+
 // LoadMessages loads all conversation messages for this session,
 // reconstructing them into the ConversationMessage format for the AI client.
 func (s *Session) LoadMessages() []ai.ConversationMessage {
