@@ -76,7 +76,7 @@ func (h *WebhookHandler) runStructuredReview(ctx context.Context, aiClient ai.Cl
 		OnFinish:          structreview.FinishCheck(store, review.ID),
 		RequireFinishTool: true,
 	})
-	result, err := r.Run(ctx, structuredPrompt(title, body, diff, onHead))
+	result, err := r.Run(ctx, structuredPrompt(title, body, diff, onHead, h.calibration(bs, owner, repoName)))
 	if err != nil && errors.Is(err, context.Canceled) {
 		slog.Info("Structured review superseded by a newer run", "pr", prNum, "review", review.ID)
 		session.SetStatus("CANCELLED")
@@ -210,7 +210,10 @@ func changedPaths(diff string) map[string]bool {
 	return paths
 }
 
-func structuredPrompt(title, body, diff string, onHead bool) string {
+func structuredPrompt(title, body, diff string, onHead bool, calibration string) string {
+	if calibration != "" {
+		calibration = "\n" + calibration + "\n"
+	}
 	return fmt.Sprintf(`Review this pull request.
 
 **Title**: %s
@@ -228,6 +231,7 @@ How to report (only what you record with these tools is published; text you writ
 3. Record your overall assessment with review_set_assessment, including what you reviewed and what you could not check.
 4. Check the result with review_get_draft, then call review_complete.
 
-If the change has no problems, record no findings: an assessment alone is a valid review.`,
-		title, body, truncateDiff(diff, 60000), workspaceNote(onHead))
+If the change has no problems, record no findings: an assessment alone is a valid review.
+%s`,
+		title, body, truncateDiff(diff, 60000), workspaceNote(onHead), calibration)
 }

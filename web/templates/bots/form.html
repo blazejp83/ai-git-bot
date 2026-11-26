@@ -101,6 +101,11 @@
                                     <input type="number" class="form-control" id="maxLow" name="maxLow" min="0" value="{{.Bot.MaxLow}}" placeholder="No limit"/>
                                 </div>
                             </div>
+                            <div class="form-check form-switch mt-2">
+                                <input class="form-check-input" type="checkbox" id="feedbackEnabled" name="feedbackEnabled" value="true"{{if .Bot.FeedbackEnabled}} checked{{end}}/>
+                                <label class="form-check-label" for="feedbackEnabled"><strong>Feedback commands</strong></label>
+                            </div>
+                            <div class="form-text mb-2">Reviewers can rate findings in a PR comment, e.g. <code>@bot feedback R12-F2 incorrect the loop is inclusive on purpose</code> (also <code>retract FB3</code>, <code>show FB3</code>, <code>list</code>). Corrective verdicts are given to later reviews of the same repository.</div>
                             <div class="form-text">More findings than a limit → <em>request changes</em>; within all limits → <em>approve</em>. Leave all three blank to only comment. An inconclusive review always only comments. If the provider refuses a formal review (e.g. the bot approving its own PR), the review is posted as a comment.</div>
                         </div>
                     </div>

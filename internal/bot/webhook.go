@@ -81,18 +81,19 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var structured bool
 	var issueWorkflow string
 	var workflowsJSON sql.NullString
+	var feedbackEnabled bool
 	var maxBlockers, maxMedium, maxLow sql.NullInt64
 	var maxTurnsReview, maxTurnsImpl sql.NullInt64
 
 	err := h.db.QueryRow(`
 		SELECT b.id, b.name, b.username, gi.provider_type, b.ai_integration_id, b.git_integration_id,
 		       b.agent_enabled, b.prompt, b.max_turns_review, b.max_turns_implementation, b.shell_allowlist, b.pr_target_branches,
-		       b.structured_review, b.review_max_blockers, b.review_max_medium, b.review_max_low, b.issue_workflow, b.workflows
+		       b.structured_review, b.review_max_blockers, b.review_max_medium, b.review_max_low, b.issue_workflow, b.workflows, b.feedback_enabled
 		FROM bots b
 		JOIN git_integrations gi ON b.git_integration_id = gi.id
 		WHERE b.webhook_secret = ? AND b.enabled = 1
 	`, secret).Scan(&botID, &botName, &botUsername, &providerType, &aiIntegrationID, &gitIntegrationID, &agentEnabled, &botPrompt, &maxTurnsReview, &maxTurnsImpl, &shellAllowlist, &prTargets,
-		&structured, &maxBlockers, &maxMedium, &maxLow, &issueWorkflow, &workflowsJSON)
+		&structured, &maxBlockers, &maxMedium, &maxLow, &issueWorkflow, &workflowsJSON, &feedbackEnabled)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ignored"})
@@ -193,6 +194,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	bs.structuredReview = structured
 	bs.issueWorkflow = issueWorkflow
 	bs.workflows = workflow.Parse(workflowsJSON.String)
+	bs.feedbackEnabled = feedbackEnabled
 	bs.thresholds = structreview.Thresholds{
 		MaxBlockers: intPtr(maxBlockers), MaxMedium: intPtr(maxMedium), MaxLow: intPtr(maxLow),
 	}
@@ -230,6 +232,8 @@ type botSettings struct {
 	issueWorkflow string
 	// workflows are the PR workflows and their settings.
 	workflows workflow.Settings
+	// feedbackEnabled answers "@bot feedback …" commands on structured reviews.
+	feedbackEnabled bool
 	// prTargetBranches limits automatic reviews to PRs into these base
 	// branches (glob patterns); nil = all branches.
 	prTargetBranches []string
@@ -329,6 +333,10 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 	case "created":
 		// A reply to the writer's questions continues it, no mention needed.
 		if event.Comment != nil && h.routeToWriter(ctx, aiClient, repoClient, owner, repoName, event, hasBotMention, promptText, bs) {
+			return
+		}
+		// Feedback on structured reviews: "@bot feedback R12-F2 incorrect …".
+		if event.Comment != nil && hasBotMention && h.handleFeedback(ctx, repoClient, owner, repoName, event, bs) {
 			return
 		}
 		// Workflow commands other than review, e.g. #regenerate-readme.

@@ -56,6 +56,7 @@ type botFormRow struct {
 	ShellAllowlist         string
 	PrTargetBranches       string
 	StructuredReview       bool
+	FeedbackEnabled        bool
 	IssueWorkflow          string // implement, writer or none
 	Workflows              []workflow.FormWorkflow
 	// Decision thresholds as typed in the form; "" = no limit.
@@ -99,7 +100,7 @@ func (h *BotHandlers) List(w http.ResponseWriter, r *http.Request) {
 func (h *BotHandlers) NewForm(w http.ResponseWriter, r *http.Request) {
 	h.tpl.Render(w, "bots/form", botFormData{
 		ActiveNav: "bots", IsEdit: false,
-		Bot: botFormRow{Enabled: true, StructuredReview: true, MaxBlockers: "0", MaxMedium: "2", IssueWorkflow: "implement",
+		Bot: botFormRow{Enabled: true, StructuredReview: true, FeedbackEnabled: true, MaxBlockers: "0", MaxMedium: "2", IssueWorkflow: "implement",
 			Workflows: workflow.Parse("").ForForm()},
 		AiIntegrations:  h.loadAiIntegrations(),
 		GitIntegrations: h.loadGitIntegrations(),
@@ -117,10 +118,10 @@ func (h *BotHandlers) EditForm(w http.ResponseWriter, r *http.Request) {
 	var maxTurnsR, maxTurnsI sql.NullInt64
 	err := h.db.QueryRow(`SELECT id, name, username, prompt, webhook_secret, enabled, agent_enabled,
 	       ai_integration_id, git_integration_id, max_turns_review, max_turns_implementation, shell_allowlist, pr_target_branches,
-	       structured_review, review_max_blockers, review_max_medium, review_max_low, issue_workflow, workflows FROM bots WHERE id = ?`, id).
+	       structured_review, review_max_blockers, review_max_medium, review_max_low, issue_workflow, workflows, feedback_enabled FROM bots WHERE id = ?`, id).
 		Scan(&b.ID, &b.Name, &b.Username, &prompt, &secret, &b.Enabled, &b.AgentEnabled,
 			&b.AiIntegrationID, &b.GitIntegrationID, &maxTurnsR, &maxTurnsI, &shellAllowlist, &prTargets,
-			&b.StructuredReview, &maxBlockers, &maxMedium, &maxLow, &b.IssueWorkflow, &workflowsJSON)
+			&b.StructuredReview, &maxBlockers, &maxMedium, &maxLow, &b.IssueWorkflow, &workflowsJSON, &b.FeedbackEnabled)
 	if err != nil {
 		http.Redirect(w, r, "/bots", http.StatusSeeOther)
 		return
@@ -172,6 +173,7 @@ func (h *BotHandlers) Save(w http.ResponseWriter, r *http.Request) {
 	}
 	prTargets := strings.TrimSpace(r.FormValue("prTargetBranches"))
 	structured := r.FormValue("structuredReview") == "true"
+	feedbackEnabled := r.FormValue("feedbackEnabled") == "true"
 	workflowsJSON := workflow.FromForm(r.Form).JSON()
 	issueWorkflow := r.FormValue("issueWorkflow")
 	if issueWorkflow != "writer" && issueWorkflow != "none" {
@@ -191,17 +193,17 @@ func (h *BotHandlers) Save(w http.ResponseWriter, r *http.Request) {
 		h.db.Exec(`UPDATE bots SET name=?, username=?, prompt=?, enabled=?, agent_enabled=?,
 			ai_integration_id=?, git_integration_id=?, webhook_secret=?,
 			max_turns_review=?, max_turns_implementation=?, shell_allowlist=?, pr_target_branches=?,
-			structured_review=?, review_max_blockers=?, review_max_medium=?, review_max_low=?, issue_workflow=?, workflows=?, updated_at=? WHERE id=?`,
+			structured_review=?, review_max_blockers=?, review_max_medium=?, review_max_low=?, issue_workflow=?, workflows=?, feedback_enabled=?, updated_at=? WHERE id=?`,
 			name, username, nullStr(prompt), enabled, agentEnabled, aiID, gitID, nullStr(webhookSecret),
-			mtrSQL, mtiSQL, salSQL, nullStr(prTargets), structured, maxBlockers, maxMedium, maxLow, issueWorkflow, workflowsJSON, now, id)
+			mtrSQL, mtiSQL, salSQL, nullStr(prTargets), structured, maxBlockers, maxMedium, maxLow, issueWorkflow, workflowsJSON, feedbackEnabled, now, id)
 	} else {
 		secret := generateSecret()
 		h.db.Exec(`INSERT INTO bots (name, username, prompt, webhook_secret, enabled, agent_enabled,
 			ai_integration_id, git_integration_id, max_turns_review, max_turns_implementation, shell_allowlist, pr_target_branches,
-			structured_review, review_max_blockers, review_max_medium, review_max_low, issue_workflow, workflows, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			structured_review, review_max_blockers, review_max_medium, review_max_low, issue_workflow, workflows, feedback_enabled, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			name, username, nullStr(prompt), secret, enabled, agentEnabled, aiID, gitID, mtrSQL, mtiSQL, salSQL, nullStr(prTargets),
-			structured, maxBlockers, maxMedium, maxLow, issueWorkflow, workflowsJSON, now, now)
+			structured, maxBlockers, maxMedium, maxLow, issueWorkflow, workflowsJSON, feedbackEnabled, now, now)
 	}
 
 	http.Redirect(w, r, "/bots", http.StatusSeeOther)
