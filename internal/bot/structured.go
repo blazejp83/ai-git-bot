@@ -75,6 +75,11 @@ func (h *WebhookHandler) runStructuredReview(ctx context.Context, aiClient ai.Cl
 		RequireFinishTool: true,
 	})
 	result, err := r.Run(ctx, structuredPrompt(title, body, diff, onHead))
+	if err != nil && errors.Is(err, context.Canceled) {
+		slog.Info("Structured review superseded by a newer run", "pr", prNum, "review", review.ID)
+		session.SetStatus("CANCELLED")
+		return false
+	}
 	if err != nil {
 		slog.Error("Structured review failed", "err", err, "review", review.ID)
 		h.recordError(bs.id, "Review failed: "+err.Error())

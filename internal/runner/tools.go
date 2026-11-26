@@ -121,7 +121,7 @@ func NewToolRegistry(mode Mode, shellAllowlist []string, shellTimeout time.Durat
 		})
 	}
 
-	if mode != ModeWriter {
+	if mode.hasShell() {
 		r.register(RegisteredTool{
 			Def: ai.ToolDef{
 				Name:        "shell",

@@ -265,6 +265,21 @@ func globToRegexp(glob string, ignoreCase bool) *regexp.Regexp {
 	return re
 }
 
+// MatchesGlob reports whether a repository-relative path matches a
+// ripgrep-style glob: a glob with "/" matches the whole path (** spans
+// directories), one without matches the file name.
+func MatchesGlob(glob, path string) bool {
+	glob = strings.TrimSpace(glob)
+	if glob == "" {
+		return false
+	}
+	m := globMatcher{re: globToRegexp(glob, false), fullPath: strings.Contains(glob, "/")}
+	if m.fullPath {
+		return m.re.MatchString(path)
+	}
+	return m.re.MatchString(filepath.Base(path))
+}
+
 type rgGlobFilter struct {
 	include, exclude []globMatcher
 }

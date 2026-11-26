@@ -80,3 +80,16 @@ func (w *Workspace) BranchSummary(ctx context.Context, base string) string {
 	}
 	return "Commits on this branch:\n" + strings.TrimSpace(log) + "\n\nFiles changed compared with " + base + ":\n" + strings.TrimSpace(stat)
 }
+
+// StagedDiff stages every change (new files included) and returns the diff
+// against HEAD.
+func (w *Workspace) StagedDiff(ctx context.Context) (string, error) {
+	if out, err := w.git(ctx, "add", "-A"); err != nil {
+		return "", fmt.Errorf("git add: %w — %s", err, out)
+	}
+	out, err := w.git(ctx, "diff", "--cached")
+	if err != nil {
+		return "", fmt.Errorf("git diff: %w — %s", err, out)
+	}
+	return out, nil
+}

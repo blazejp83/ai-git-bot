@@ -106,6 +106,42 @@
                     </div>
                 </div>
 
+                <!-- PR workflows -->
+                <div class="col-12">
+                    <div class="card bg-light">
+                        <div class="card-body py-2">
+                            <h6 class="mb-1">Pull request workflows</h6>
+                            {{range .Bot.Workflows}}
+                            <div class="border-top pt-2 mt-2">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="wf-{{.Key}}" name="wf.{{.Key}}.enabled" value="true"{{if .Enabled}} checked{{end}}/>
+                                    <label class="form-check-label" for="wf-{{.Key}}"><strong>{{.Name}}</strong></label>
+                                </div>
+                                <div class="form-text">{{.Description}}</div>
+                                {{if .Fields}}
+                                <div class="row g-2 mt-1">
+                                    {{range .Fields}}
+                                    <div class="col-md-4">
+                                        <label class="form-label small mb-0" for="{{.Name}}">{{.Label}}</label>
+                                        {{if eq .Type "select"}}
+                                        {{$v := .Value}}
+                                        <select class="form-select form-select-sm" id="{{.Name}}" name="{{.Name}}">
+                                            {{range .Options}}<option value="{{.Value}}"{{if eq .Value $v}} selected{{end}}>{{.Label}}</option>{{end}}
+                                        </select>
+                                        {{else}}
+                                        <input type="text" class="form-control form-control-sm" id="{{.Name}}" name="{{.Name}}" value="{{.Value}}"/>
+                                        {{end}}
+                                        {{if .Help}}<div class="form-text">{{.Help}}</div>{{end}}
+                                    </div>
+                                    {{end}}
+                                </div>
+                                {{end}}
+                            </div>
+                            {{end}}
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Turn Limit Overrides -->
                 <div class="col-12 mt-3">
                     <div class="card bg-light">

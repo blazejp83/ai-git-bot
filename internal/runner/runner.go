@@ -17,7 +17,11 @@ const (
 	ModeReview         Mode = "review"         // read-only tools, output = comment
 	ModeImplementation Mode = "implementation" // read+write tools, output = PR
 	ModeWriter         Mode = "writer"         // read-only tools without shell, output = a refined issue
+	ModeDocs           Mode = "docs"           // read-only tools without shell plus guarded Markdown writes
 )
+
+// hasShell reports whether the mode may run shell commands.
+func (m Mode) hasShell() bool { return m != ModeWriter && m != ModeDocs }
 
 // Config holds runner configuration.
 type Config struct {

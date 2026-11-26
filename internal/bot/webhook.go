@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,6 +23,7 @@ import (
 	"github.com/tmseidel/ai-git-bot/internal/runner"
 	"github.com/tmseidel/ai-git-bot/internal/structreview"
 	"github.com/tmseidel/ai-git-bot/internal/webhook"
+	"github.com/tmseidel/ai-git-bot/internal/workflow"
 )
 
 type WebhookHandler struct {
@@ -31,6 +34,8 @@ type WebhookHandler struct {
 	repoFactory   *repo.ClientFactory
 	promptService *prompt.Service
 	debouncer     *reviewDebouncer
+	orchMu        sync.Mutex
+	orch          *workflow.Orchestrator
 	// cloneURLOverride replaces the integration's clone URL (tests only).
 	cloneURLOverride func(owner, repoName string) string
 }
@@ -62,18 +67,19 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var botPrompt, shellAllowlist, prTargets sql.NullString
 	var structured bool
 	var issueWorkflow string
+	var workflowsJSON sql.NullString
 	var maxBlockers, maxMedium, maxLow sql.NullInt64
 	var maxTurnsReview, maxTurnsImpl sql.NullInt64
 
 	err := h.db.QueryRow(`
 		SELECT b.id, b.name, b.username, gi.provider_type, b.ai_integration_id, b.git_integration_id,
 		       b.agent_enabled, b.prompt, b.max_turns_review, b.max_turns_implementation, b.shell_allowlist, b.pr_target_branches,
-		       b.structured_review, b.review_max_blockers, b.review_max_medium, b.review_max_low, b.issue_workflow
+		       b.structured_review, b.review_max_blockers, b.review_max_medium, b.review_max_low, b.issue_workflow, b.workflows
 		FROM bots b
 		JOIN git_integrations gi ON b.git_integration_id = gi.id
 		WHERE b.webhook_secret = ? AND b.enabled = 1
 	`, secret).Scan(&botID, &botName, &botUsername, &providerType, &aiIntegrationID, &gitIntegrationID, &agentEnabled, &botPrompt, &maxTurnsReview, &maxTurnsImpl, &shellAllowlist, &prTargets,
-		&structured, &maxBlockers, &maxMedium, &maxLow, &issueWorkflow)
+		&structured, &maxBlockers, &maxMedium, &maxLow, &issueWorkflow, &workflowsJSON)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ignored"})
@@ -173,6 +179,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	bs.structuredReview = structured
 	bs.issueWorkflow = issueWorkflow
+	bs.workflows = workflow.Parse(workflowsJSON.String)
 	bs.thresholds = structreview.Thresholds{
 		MaxBlockers: intPtr(maxBlockers), MaxMedium: intPtr(maxMedium), MaxLow: intPtr(maxLow),
 	}
@@ -208,6 +215,8 @@ type botSettings struct {
 	// issueWorkflow is what the bot does when assigned to an issue:
 	// "implement", "writer" or "none".
 	issueWorkflow string
+	// workflows are the PR workflows and their settings.
+	workflows workflow.Settings
 	// prTargetBranches limits automatic reviews to PRs into these base
 	// branches (glob patterns); nil = all branches.
 	prTargetBranches []string
@@ -288,7 +297,13 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 					"pr", event.PullRequest.Number, "base", base, "allowed", strings.Join(bs.prTargetBranches, ", "))
 				return
 			}
-			h.reviewOnce(ctx, bs, event, aiClient, repoClient, promptText, allowlist)
+			// The enabled workflows, in order.
+			if bs.workflows.Enabled(workflow.Review) {
+				h.reviewOnce(ctx, bs, event, aiClient, repoClient, promptText, allowlist)
+			}
+			if bs.workflows.Enabled(workflow.ReadmeSync) && bs.workflows.Param(workflow.ReadmeSync, "trigger") == "auto" {
+				h.runReadmeSync(ctx, aiClient, repoClient, owner, repoName, event.PullRequest.Number, bs, "", true)
+			}
 		}
 
 	case "review_requested":
@@ -302,6 +317,16 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 		// A reply to the writer's questions continues it, no mention needed.
 		if event.Comment != nil && h.routeToWriter(ctx, aiClient, repoClient, owner, repoName, event, hasBotMention, promptText, bs) {
 			return
+		}
+		// Workflow commands other than review, e.g. #regenerate-readme.
+		if event.Comment != nil && hasBotMention {
+			if key, instruction, ok := workflow.ParseCommand(event.Comment.Body); ok && key == workflow.ReadmeSync {
+				if prNum := resolvePRNumber(event); prNum > 0 && (event.PullRequest != nil || (event.Issue != nil && event.Issue.IsPR)) {
+					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
+					h.runReadmeSync(ctx, aiClient, repoClient, owner, repoName, prNum, bs, instruction, false)
+					return
+				}
+			}
 		}
 		if event.Comment != nil && hasBotMention && h.routeToImplementation(ctx, aiClient, repoClient, owner, repoName, event, promptText, bs, allowlist) {
 			return
@@ -327,7 +352,9 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 				switch trigger {
 				case "review", "fullreview":
 					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
-					h.runReview(ctx, aiClient, repoClient, owner, repoName, prNum, event.PullRequest, promptText, bs, allowlist)
+					rctx, done := h.orchestrator().Start(ctx, runKey(bs.id, owner, repoName, prNum, workflow.Review))
+					h.runReview(rctx, aiClient, repoClient, owner, repoName, prNum, event.PullRequest, promptText, bs, allowlist)
+					done()
 				case "investigate", "explore", "deep":
 					repoClient.AddReaction(ctx, owner, repoName, event.Comment.ID, "eyes")
 					h.runAgenticFollowup(ctx, aiClient, repoClient, owner, repoName, prNum, body, promptText, bs.reviewTurns(20), allowlist, bs.gitIntID, commenter, prAuthor)
@@ -380,6 +407,8 @@ func (h *WebhookHandler) dispatch(bs botSettings, event *webhook.Event) {
 // gives its claim back.
 func (h *WebhookHandler) reviewOnce(ctx context.Context, bs botSettings, event *webhook.Event, aiClient ai.Client, repoClient repo.Client, promptText string, allowlist []string) {
 	pr := event.PullRequest
+	ctx, done := h.orchestrator().Start(ctx, runKey(bs.id, event.Repo.Owner, event.Repo.Name, pr.Number, workflow.Review))
+	defer done()
 	key := debounceKey(bs.id, event.Repo.FullName, pr.Number)
 	if !h.debouncer.tryClaim(key, pr.Head.SHA) {
 		slog.Info("Review already triggered for this commit; skipping", "pr", pr.Number, "sha", pr.Head.SHA, "action", event.Action)
@@ -454,6 +483,11 @@ When you're done, call the "done" tool with your review as markdown.`, title, bo
 
 	result, err := r.Run(ctx, initialPrompt)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			slog.Info("Review superseded by a newer run", "pr", prNum)
+			session.SetStatus("CANCELLED")
+			return false
+		}
 		slog.Error("Review runner failed", "err", err)
 		h.recordError(0, "Review failed: "+err.Error())
 		session.SetStatus("FAILED")
@@ -521,6 +555,23 @@ func (h *WebhookHandler) prepareReviewWorkspace(ctx context.Context, repoClient 
 		return ws, reviewedSHA, false, nil
 	}
 	return ws, sha, true, nil
+}
+
+// orchestrator returns the handler's workflow orchestrator, creating it on
+// first use.
+func (h *WebhookHandler) orchestrator() *workflow.Orchestrator {
+	h.orchMu.Lock()
+	defer h.orchMu.Unlock()
+	if h.orch == nil {
+		h.orch = workflow.NewOrchestrator()
+	}
+	return h.orch
+}
+
+// runKey identifies a workflow run for cancellation: a newer run with the same
+// key cancels the older one.
+func runKey(botID int64, owner, repoName string, prNum int64, workflowKey string) string {
+	return fmt.Sprintf("%d|%s/%s|%d|%s", botID, owner, repoName, prNum, workflowKey)
 }
 
 // headMoved reports whether the PR's live head is no longer the reviewed commit.
