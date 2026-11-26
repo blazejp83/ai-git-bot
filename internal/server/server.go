@@ -22,6 +22,11 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 	adminSvc := auth.NewAdminService(database)
 	tpl := web.LoadTemplates("web/templates")
 	handlers := web.NewHandlers(tpl, adminSvc, sm, database, enc)
+	var remember *auth.RememberStore
+	if cfg.RememberMeDays > 0 {
+		remember = auth.NewRememberStore(database, time.Duration(cfg.RememberMeDays)*24*time.Hour)
+		handlers.SetRememberStore(remember)
+	}
 	aiHandlers := web.NewAiHandlers(tpl, database, enc)
 	botHandlers := web.NewBotHandlers(tpl, database, enc)
 	gitHandlers := web.NewGitHandlers(tpl, database, enc)
@@ -64,7 +69,7 @@ func New(cfg *config.Config, database *sql.DB, enc *encrypt.Service) http.Handle
 
 	// Authenticated web routes
 	r.Group(func(r chi.Router) {
-		r.Use(RequireAuth(sm, nil))
+		r.Use(RequireAuth(sm, remember, nil))
 
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)

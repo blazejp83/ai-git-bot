@@ -24,14 +24,17 @@ type Config struct {
 	AgentMaxFileContentChar int
 
 	// Agent Validation
-	AgentValidationEnabled       bool
-	AgentValidationMaxRetries    int
-	AgentValidationBuildEnabled  bool
-	AgentValidationBuildTimeout  int
-	AgentValidationToolTimeout   int
+	AgentValidationEnabled      bool
+	AgentValidationMaxRetries   int
+	AgentValidationBuildEnabled bool
+	AgentValidationBuildTimeout int
+	AgentValidationToolTimeout  int
 
 	// Session
 	SessionSecret string
+
+	// RememberMeDays is how long "remember me" keeps a browser signed in (0 = no checkbox).
+	RememberMeDays int
 
 	// AI usage log: rows older than this many days are pruned daily (0 = keep forever).
 	AIUsageRetentionDays int
@@ -58,11 +61,12 @@ func Load() *Config {
 		AgentValidationMaxRetries:   envInt("AGENT_VALIDATION_MAX_RETRIES", 3),
 		AgentValidationBuildEnabled: envBool("AGENT_VALIDATION_BUILD_ENABLED", false),
 		AgentValidationBuildTimeout: envInt("AGENT_VALIDATION_BUILD_TIMEOUT", 300),
-		AgentValidationToolTimeout: envInt("AGENT_VALIDATION_TOOL_TIMEOUT", 300),
+		AgentValidationToolTimeout:  envInt("AGENT_VALIDATION_TOOL_TIMEOUT", 300),
 
 		SessionSecret: envOr("SESSION_SECRET", ""), // unset → random per process (see auth.NewSessionManager)
 
 		AIUsageRetentionDays: envInt("AI_USAGE_RETENTION_DAYS", 90),
+		RememberMeDays:       envInt("REMEMBER_ME_DAYS", 14),
 	}
 }
 

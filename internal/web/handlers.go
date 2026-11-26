@@ -20,7 +20,11 @@ type Handlers struct {
 	db       *sql.DB
 	enc      *encrypt.Service
 	usage    *usage.Store
+	remember *auth.RememberStore
 }
+
+// SetRememberStore enables the "remember me" checkbox on the login page.
+func (h *Handlers) SetRememberStore(s *auth.RememberStore) { h.remember = s }
 
 // SetUsageStore lets the dashboard show AI usage.
 func (h *Handlers) SetUsageStore(s *usage.Store) { h.usage = s }
@@ -87,9 +91,13 @@ func (h *Handlers) LoginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]any{
-		"Error":   "",
-		"Success": "",
-		"Logout":  false,
+		"Error":        "",
+		"Success":      "",
+		"Logout":       false,
+		"RememberDays": 0,
+	}
+	if h.remember != nil {
+		data["RememberDays"] = h.remember.Days()
 	}
 	if r.URL.Query().Get("error") != "" {
 		data["Error"] = "Invalid username or password."
@@ -119,11 +127,19 @@ func (h *Handlers) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.sessions.CreateSession(w, r, user.Username)
+	if h.remember != nil && r.FormValue("remember") == "true" {
+		if err := h.remember.Issue(w, r, user.Username); err != nil {
+			slog.Error("Remember-me failed", "err", err)
+		}
+	}
 	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 }
 
 func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) {
 	h.sessions.DestroySession(w, r)
+	if h.remember != nil {
+		h.remember.Forget(w, r)
+	}
 	http.Redirect(w, r, "/login?logout=1", http.StatusSeeOther)
 }
 

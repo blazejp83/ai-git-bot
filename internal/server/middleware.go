@@ -14,7 +14,9 @@ const usernameKey contextKey = "username"
 
 // RequireAuth redirects unauthenticated users to /login.
 // Paths in skipPrefixes are allowed without auth.
-func RequireAuth(sm *auth.SessionManager, skipPrefixes []string) func(http.Handler) http.Handler {
+// With a remember-me store, a browser whose session expired is signed back in
+// from its remember cookie and gets a fresh session.
+func RequireAuth(sm *auth.SessionManager, remember *auth.RememberStore, skipPrefixes []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
@@ -27,6 +29,11 @@ func RequireAuth(sm *auth.SessionManager, skipPrefixes []string) func(http.Handl
 			}
 
 			username := sm.GetUsername(r)
+			if username == "" && remember != nil {
+				if username = remember.Consume(w, r); username != "" {
+					sm.CreateSession(w, r, username)
+				}
+			}
 			if username == "" {
 				http.Redirect(w, r, "/login", http.StatusSeeOther)
 				return
